@@ -33,6 +33,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}/dir", post(create_session_dir))
         .route("/api/sessions/{id}/dir", delete(delete_session_dir))
         .route("/api/sessions/{id}/dir/rename", post(rename_session_dir))
+        .route("/api/sessions/{id}/git/log", get(git_log))
+        .route("/api/sessions/{id}/git/show", get(git_show))
         .route("/api/directories", get(list_directories))
         .route("/api/admin/users", get(crate::admin::list_users))
         .route(
@@ -789,4 +791,188 @@ async fn rename_session_dir(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Rename failed: {}", e)))?;
 
     Ok(StatusCode::OK)
+}
+
+// ── Git log / show ──
+
+#[derive(serde::Deserialize)]
+struct GitLogQuery {
+    limit: Option<usize>,
+}
+
+async fn git_log(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Query(query): Query<GitLogQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let work_dir = state
+        .sessions
+        .work_dir(&id)
+        .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
+
+    let limit = query.limit.unwrap_or(100).min(500);
+
+    // Use --graph --all to show branch/merge topology.
+    // COMMIT_START marker distinguishes commit lines from graph-only lines.
+    let marker = "COMMIT_START";
+    let sep = "\x01"; // ASCII SOH as field separator — won't appear in commit data
+    let format_str = format!(
+        "{marker}{sep}%H{sep}%h{sep}%an{sep}%aI{sep}%s{sep}%D"
+    );
+
+    let output = std::process::Command::new("git")
+        .args([
+            "log",
+            "--all",
+            "--graph",
+            &format!("--format={}", format_str),
+            &format!("-{}", limit),
+        ])
+        .current_dir(&work_dir)
+        .output()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("git log failed: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err((StatusCode::BAD_REQUEST, format!("git log error: {}", stderr)));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Parse lines into entries: each has `graph` (the ASCII art prefix) and optionally `commit`
+    let mut entries = Vec::new();
+    for line in stdout.lines() {
+        if let Some(marker_pos) = line.find(marker) {
+            // Commit line: graph chars before marker, commit data after
+            let graph = &line[..marker_pos];
+            let data = &line[marker_pos + marker.len()..];
+            let fields: Vec<&str> = data.split(sep).collect();
+            // fields[0] is empty (sep before hash), so fields are: ["", hash, short, author, date, subject, refs]
+            if fields.len() >= 6 {
+                entries.push(serde_json::json!({
+                    "graph": graph,
+                    "commit": {
+                        "hash": fields[1],
+                        "short_hash": fields[2],
+                        "author": fields[3],
+                        "date": fields[4],
+                        "subject": fields[5],
+                        "refs": fields.get(6).unwrap_or(&""),
+                    }
+                }));
+            }
+        } else {
+            // Graph-only line (connector between commits)
+            entries.push(serde_json::json!({
+                "graph": line,
+                "commit": null
+            }));
+        }
+    }
+
+    // Total commit count across all branches
+    let total = std::process::Command::new("git")
+        .args(["rev-list", "--count", "--all"])
+        .current_dir(&work_dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<usize>().unwrap_or(0))
+        .unwrap_or(0);
+
+    Ok(Json(serde_json::json!({
+        "entries": entries,
+        "total": total,
+    })))
+}
+
+#[derive(serde::Deserialize)]
+struct GitShowQuery {
+    commit: String,
+}
+
+async fn git_show(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Query(query): Query<GitShowQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let work_dir = state
+        .sessions
+        .work_dir(&id)
+        .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
+
+    // Only allow hex chars to prevent command injection
+    if !query.commit.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err((StatusCode::BAD_REQUEST, "Invalid commit hash".to_string()));
+    }
+
+    // Commit metadata
+    let sep = "---FIELD---";
+    let format_str = format!("%H{sep}%h{sep}%an{sep}%aI{sep}%s{sep}%b");
+    let meta_output = std::process::Command::new("git")
+        .args(["log", "-1", &format!("--format={}", format_str), &query.commit])
+        .current_dir(&work_dir)
+        .output()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("git show failed: {}", e)))?;
+
+    if !meta_output.status.success() {
+        return Err((StatusCode::NOT_FOUND, "Commit not found".to_string()));
+    }
+
+    let meta_str = String::from_utf8_lossy(&meta_output.stdout);
+    let fields: Vec<&str> = meta_str.split(sep).collect();
+    let meta = if fields.len() >= 5 {
+        serde_json::json!({
+            "hash": fields[0].trim(),
+            "short_hash": fields[1].trim(),
+            "author": fields[2].trim(),
+            "date": fields[3].trim(),
+            "subject": fields[4].trim(),
+            "body": fields.get(5).unwrap_or(&"").trim(),
+        })
+    } else {
+        serde_json::json!({})
+    };
+
+    // Diff content
+    let diff_output = std::process::Command::new("git")
+        .args(["show", "--format=", "--patch", &query.commit])
+        .current_dir(&work_dir)
+        .output()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("git show failed: {}", e)))?;
+
+    let diff = String::from_utf8_lossy(&diff_output.stdout).to_string();
+
+    // Changed files with line counts
+    let files: Vec<serde_json::Value> = std::process::Command::new("git")
+        .args(["show", "--format=", "--numstat", &query.commit])
+        .current_dir(&work_dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .filter_map(|line| {
+                    let parts: Vec<&str> = line.split('\t').collect();
+                    if parts.len() >= 3 {
+                        Some(serde_json::json!({
+                            "additions": parts[0].parse::<i32>().unwrap_or(-1),
+                            "deletions": parts[1].parse::<i32>().unwrap_or(-1),
+                            "path": parts[2],
+                        }))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(Json(serde_json::json!({
+        "commit": meta,
+        "diff": diff,
+        "files": files,
+    })))
 }

@@ -151,6 +151,13 @@ export default function AcpChatView({ sessionId, active, agentType = 'claude' }:
         setBusy(false)
         break
       }
+
+      case 'replay_done': {
+        // Scrollback replay finished — close any open assistant turn and reset busy
+        currentAssistant.current = null
+        setBusy(false)
+        break
+      }
     }
   }, [pushMessage, updateAssistant])
 

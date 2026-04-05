@@ -1,13 +1,15 @@
 import { useState, useCallback } from 'react'
 import type { SessionInfo, SessionMetaStatus } from '../lib/api'
 import { updateSession } from '../lib/api'
-import { ChevronDown, ChevronRight, FileText, StickyNote } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileText, StickyNote, GitBranch } from 'lucide-react'
 
 interface Props {
   session: SessionInfo
   onUpdate: (updated: Partial<SessionInfo>) => void
   onToggleFiles: () => void
+  onToggleGit: () => void
   showFiles: boolean
+  showGit: boolean
 }
 
 const STATUS_OPTIONS: { value: SessionMetaStatus; label: string; color: string }[] = [
@@ -22,7 +24,7 @@ export function StatusDot({ status }: { status: SessionMetaStatus }) {
   return <span className={`inline-block w-2 h-2 rounded-full ${opt?.color || 'bg-gray-400'} shrink-0`} />
 }
 
-export default function SessionInfoBar({ session, onUpdate, onToggleFiles, showFiles }: Props) {
+export default function SessionInfoBar({ session, onUpdate, onToggleFiles, onToggleGit, showFiles, showGit }: Props) {
   const [expanded, setExpanded] = useState(false)
   const [desc, setDesc] = useState(session.description)
   const [notes, setNotes] = useState(session.notes)
@@ -96,6 +98,17 @@ export default function SessionInfoBar({ session, onUpdate, onToggleFiles, showF
             title="Browse files"
           >
             <FileText size={14} />
+          </button>
+          <button
+            onClick={onToggleGit}
+            className={`p-1 rounded transition-colors ${
+              showGit
+                ? 'text-[var(--accent-blue)] bg-[var(--bg-primary)]'
+                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+            title="Git history"
+          >
+            <GitBranch size={14} />
           </button>
         </div>
       </div>

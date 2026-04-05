@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tokio::sync::mpsc;
 
-/// Max scrollback buffer size in bytes (512KB of encoded data)
-const SCROLLBACK_MAX_BYTES: usize = 512 * 1024;
+/// Max scrollback buffer size in bytes (2MB of encoded data)
+const SCROLLBACK_MAX_BYTES: usize = 2 * 1024 * 1024;
 
 use crate::acp::kiro_process::KiroProcess;
 use crate::acp::process::AcpProcess;

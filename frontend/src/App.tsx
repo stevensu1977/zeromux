@@ -9,15 +9,17 @@ import LoginPage from './components/LoginPage'
 import WaitingPage from './components/WaitingPage'
 import SessionInfoBar from './components/SessionInfoBar'
 import MarkdownViewer from './components/MarkdownViewer'
+import GitViewer from './components/GitViewer'
 
 type AuthState = 'loading' | 'unauthenticated' | 'pending' | 'active'
+type OverlayView = 'none' | 'files' | 'git'
 
 export default function App() {
   const [authState, setAuthState] = useState<AuthState>('loading')
   const [user, setUser] = useState<UserInfo | null>(null)
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
-  const [showFiles, setShowFiles] = useState<Record<string, boolean>>({})
+  const [overlay, setOverlay] = useState<Record<string, OverlayView>>({})
   const themeCtx = useTheme()
 
   const initAuth = useCallback(async () => {
@@ -99,8 +101,11 @@ export default function App() {
     setSessions(prev => prev.map(s => s.id === id ? { ...s, ...updated } : s))
   }, [])
 
-  const toggleFiles = useCallback((id: string) => {
-    setShowFiles(prev => ({ ...prev, [id]: !prev[id] }))
+  const toggleOverlay = useCallback((id: string, view: 'files' | 'git') => {
+    setOverlay(prev => ({
+      ...prev,
+      [id]: prev[id] === view ? 'none' : view,
+    }))
   }, [])
 
   if (authState === 'loading') {
@@ -137,26 +142,33 @@ export default function App() {
             key={activeSession.id}
             session={activeSession}
             onUpdate={(updated) => handleSessionUpdate(activeSession.id, updated)}
-            onToggleFiles={() => toggleFiles(activeSession.id)}
-            showFiles={!!showFiles[activeSession.id]}
+            onToggleFiles={() => toggleOverlay(activeSession.id, 'files')}
+            onToggleGit={() => toggleOverlay(activeSession.id, 'git')}
+            showFiles={(overlay[activeSession.id] || 'none') === 'files'}
+            showGit={(overlay[activeSession.id] || 'none') === 'git'}
           />
         )}
 
         {/* Main content area */}
         <div className="flex-1 min-h-0 relative">
-          {sessions.map(s => (
-            <div key={s.id} className={`absolute inset-0 ${s.id === activeId ? '' : 'hidden'}`}>
-              {/* Always keep terminal/chat mounted, hide with CSS when file viewer is active */}
-              <div className={`h-full ${showFiles[s.id] ? 'hidden' : ''}`}>
-                {s.type === 'tmux' ? (
-                  <TerminalView sessionId={s.id} active={s.id === activeId && !showFiles[s.id]} theme={themeCtx.theme} />
-                ) : (
-                  <AcpChatView sessionId={s.id} active={s.id === activeId && !showFiles[s.id]} agentType={s.type} />
-                )}
+          {sessions.map(s => {
+            const view = overlay[s.id] || 'none'
+            const isActive = s.id === activeId
+            return (
+              <div key={s.id} className={`absolute inset-0 ${isActive ? '' : 'hidden'}`}>
+                {/* Always keep terminal/chat mounted, hide with CSS when overlay is active */}
+                <div className={`h-full ${view !== 'none' ? 'hidden' : ''}`}>
+                  {s.type === 'tmux' ? (
+                    <TerminalView sessionId={s.id} active={isActive && view === 'none'} theme={themeCtx.theme} />
+                  ) : (
+                    <AcpChatView sessionId={s.id} active={isActive && view === 'none'} agentType={s.type} />
+                  )}
+                </div>
+                {view === 'files' && <MarkdownViewer sessionId={s.id} />}
+                {view === 'git' && <GitViewer sessionId={s.id} />}
               </div>
-              {showFiles[s.id] && <MarkdownViewer sessionId={s.id} />}
-            </div>
-          ))}
+            )
+          })}
           {sessions.length === 0 && (
             <div className="flex items-center justify-center h-full text-[var(--text-muted)] text-sm">
               Create a session to get started

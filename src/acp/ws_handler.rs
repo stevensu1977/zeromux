@@ -126,6 +126,7 @@ async fn run_agent_ws<P, F>(
 
     // Replay event history for reconnecting clients
     let history = state.sessions.get_scrollback(session_id);
+    let has_history = !history.is_empty();
     for json in history {
         if ws_sink
             .send(Message::Text(json.into()))
@@ -136,27 +137,16 @@ async fn run_agent_ws<P, F>(
             return;
         }
     }
-
-    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<ClientMsg>(32);
-
-    let recv_task = tokio::spawn(async move {
-        while let Some(Ok(msg)) = ws_stream.next().await {
-            match msg {
-                Message::Text(text) => {
-                    if let Ok(client_msg) = serde_json::from_str::<ClientMsg>(&text) {
-                        if cmd_tx.send(client_msg).await.is_err() {
-                            break;
-                        }
-                    }
-                }
-                Message::Close(_) => break,
-                _ => {}
-            }
-        }
-    });
+    // Signal that replay is done so the frontend can reset busy state
+    if has_history {
+        let done_msg = serde_json::json!({"type": "replay_done"});
+        let _ = ws_sink.send(Message::Text(done_msg.to_string().into())).await;
+    }
 
     let sid = session_id.to_string();
     let logger = state.logger.clone();
+
+    // Single select! loop — no spawned tasks, so process is always returned promptly
     loop {
         tokio::select! {
             event = process.event_rx().recv() => {
@@ -189,29 +179,33 @@ async fn run_agent_ws<P, F>(
                 }
             }
 
-            cmd = cmd_rx.recv() => {
-                match cmd {
-                    Some(ClientMsg::Prompt { text }) => {
-                        // Log ACP input
-                        if let Some(ref log) = logger {
-                            log.log_acp_input(&sid, &text);
-                        }
-
-                        if let Err(e) = process.send_prompt(&text).await {
-                            let err = serde_json::json!({"type": "error", "message": format!("Send failed: {}", e)});
-                            let _ = ws_sink.send(Message::Text(err.to_string().into())).await;
+            msg = ws_stream.next() => {
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(client_msg) = serde_json::from_str::<ClientMsg>(&text) {
+                            match client_msg {
+                                ClientMsg::Prompt { text } => {
+                                    if let Some(ref log) = logger {
+                                        log.log_acp_input(&sid, &text);
+                                    }
+                                    if let Err(e) = process.send_prompt(&text).await {
+                                        let err = serde_json::json!({"type": "error", "message": format!("Send failed: {}", e)});
+                                        let _ = ws_sink.send(Message::Text(err.to_string().into())).await;
+                                    }
+                                }
+                                ClientMsg::Cancel => {
+                                    process.kill().await;
+                                }
+                            }
                         }
                     }
-                    Some(ClientMsg::Cancel) => {
-                        process.kill().await;
-                    }
-                    None => break,
+                    Some(Ok(Message::Close(_))) | None => break,
+                    _ => {}
                 }
             }
         }
     }
 
-    recv_task.abort();
     return_fn(state, &sid, process);
     tracing::info!("ACP WebSocket disconnected for session {}", sid);
 }

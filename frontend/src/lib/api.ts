@@ -207,6 +207,40 @@ export async function getSessionFile(id: string, path: string): Promise<string> 
   return data.content
 }
 
+// Git
+export interface GitCommit {
+  hash: string
+  short_hash: string
+  author: string
+  date: string
+  subject: string
+  body: string
+  refs: string
+}
+
+export interface GitGraphEntry {
+  graph: string
+  commit: GitCommit | null
+}
+
+export interface GitFileChange {
+  additions: number
+  deletions: number
+  path: string
+}
+
+export async function getGitLog(id: string, limit = 50): Promise<{ entries: GitGraphEntry[]; total: number }> {
+  const res = await api(`/api/sessions/${id}/git/log?limit=${limit}`)
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function getGitShow(id: string, commit: string): Promise<{ commit: GitCommit; diff: string; files: GitFileChange[] }> {
+  const res = await api(`/api/sessions/${id}/git/show?commit=${encodeURIComponent(commit)}`)
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
 // File CRUD
 export async function writeSessionFile(id: string, path: string, content: string): Promise<void> {
   const res = await api(`/api/sessions/${id}/file`, {
