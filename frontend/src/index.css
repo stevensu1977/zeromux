@@ -1,0 +1,68 @@
+@import "tailwindcss";
+@import "@xterm/xterm/css/xterm.css";
+
+/* ── Theme variables ── */
+
+:root {
+  --bg-primary:   #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary:  #1c2128;
+  --bg-hover:     #263040;
+  --border:       #30363d;
+  --border-light: #21262d;
+  --text-primary: #c9d1d9;
+  --text-bright:  #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted:   #484f58;
+  --accent-blue:  #58a6ff;
+  --accent-blue-hover: #79c0ff;
+  --accent-green: #238636;
+  --accent-green-hover: #2ea043;
+  --accent-green-text: #3fb950;
+  --accent-purple: #a371f7;
+  --accent-purple-dim: #8b5cf6;
+  --accent-purple-bg: #1c1c2e;
+  --accent-purple-text: #a5a0c8;
+  --accent-yellow: #d29922;
+  --accent-red:   #f85149;
+  --btn-disabled-bg: #21262d;
+  --btn-disabled-text: #484f58;
+  --code-bg:      #1c2128;
+}
+
+:root.light {
+  --bg-primary:   #ffffff;
+  --bg-secondary: #f6f8fa;
+  --bg-tertiary:  #eaeef2;
+  --bg-hover:     #dce3ea;
+  --border:       #d0d7de;
+  --border-light: #e1e4e8;
+  --text-primary: #1f2328;
+  --text-bright:  #1f2328;
+  --text-secondary: #656d76;
+  --text-muted:   #8c959f;
+  --accent-blue:  #0969da;
+  --accent-blue-hover: #0550ae;
+  --accent-green: #1a7f37;
+  --accent-green-hover: #15803d;
+  --accent-green-text: #1a7f37;
+  --accent-purple: #8250df;
+  --accent-purple-dim: #6639ba;
+  --accent-purple-bg: #f3f0ff;
+  --accent-purple-text: #6e5494;
+  --accent-yellow: #9a6700;
+  --accent-red:   #cf222e;
+  --btn-disabled-bg: #eaeef2;
+  --btn-disabled-text: #8c959f;
+  --code-bg:      #f6f8fa;
+}
+
+/* ── xterm ── */
+
+.xterm-container {
+  width: 100%;
+  height: 100%;
+}
+.xterm-container .xterm {
+  height: 100%;
+}

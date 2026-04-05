@@ -1,0 +1,273 @@
+export type SessionType = 'tmux' | 'claude' | 'kiro'
+
+export type SessionMetaStatus = 'running' | 'done' | 'blocked' | 'idle'
+
+export interface SessionInfo {
+  id: string
+  name: string
+  type: SessionType
+  cols: number
+  rows: number
+  work_dir: string
+  description: string
+  status: SessionMetaStatus
+  notes: string
+}
+
+export interface SessionStatus {
+  work_dir: string
+  git_branch: string | null
+  git_dirty: number
+  is_git: boolean
+}
+
+export interface UserInfo {
+  id: string
+  login: string
+  role: string
+  status: string
+  avatar: string | null
+}
+
+export interface AuthMode {
+  oauth: boolean
+  legacy: boolean
+}
+
+export async function getSessionStatus(id: string): Promise<SessionStatus> {
+  const res = await api(`/api/sessions/${id}/status`)
+  if (!res.ok) throw new Error('Failed to get status')
+  return res.json()
+}
+
+function getToken(): string {
+  return localStorage.getItem('zeromux_token') || ''
+}
+
+export function setToken(token: string) {
+  localStorage.setItem('zeromux_token', token)
+  document.cookie = `zeromux_token=${encodeURIComponent(token)};path=/;SameSite=Strict`
+}
+
+export function clearAuth() {
+  localStorage.removeItem('zeromux_token')
+  document.cookie = 'zeromux_token=;path=/;expires=Thu, 01 Jan 1970 00:00:00 GMT'
+  document.cookie = 'zeromux_jwt=;path=/;expires=Thu, 01 Jan 1970 00:00:00 GMT'
+}
+
+async function api(path: string, opts: RequestInit = {}): Promise<Response> {
+  const token = getToken()
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(opts.headers as Record<string, string> || {}),
+  }
+  // Only add Authorization header for legacy token mode
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  return fetch(path, { ...opts, headers, credentials: 'same-origin' })
+}
+
+export async function getAuthMode(): Promise<AuthMode> {
+  const res = await fetch('/auth/mode')
+  return res.json()
+}
+
+export async function getMe(): Promise<UserInfo> {
+  const res = await api('/api/me')
+  if (!res.ok) throw new Error('Not authenticated')
+  return res.json()
+}
+
+export async function legacyLogin(password: string): Promise<UserInfo> {
+  const res = await fetch('/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  })
+  if (!res.ok) throw new Error('Invalid token')
+  const data = await res.json()
+  setToken(data.token)
+  return data.user
+}
+
+export async function listSessions(): Promise<SessionInfo[]> {
+  const res = await api('/api/sessions')
+  if (!res.ok) throw new Error('Unauthorized')
+  const data = await res.json()
+  return data.sessions || []
+}
+
+export async function createSession(type: SessionType, name?: string, workDir?: string): Promise<SessionInfo> {
+  const res = await api('/api/sessions', {
+    method: 'POST',
+    body: JSON.stringify({ type, name: name || null, work_dir: workDir || null }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export interface DirEntry {
+  name: string
+  path: string
+  is_git: boolean
+}
+
+export interface DirListing {
+  current: string
+  home: string
+  parent: string | null
+  entries: DirEntry[]
+}
+
+export async function listDirectories(path?: string): Promise<DirListing> {
+  const params = path ? `?path=${encodeURIComponent(path)}` : ''
+  const res = await api(`/api/directories${params}`)
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function deleteSession(id: string): Promise<void> {
+  await api(`/api/sessions/${id}`, { method: 'DELETE' })
+}
+
+export async function checkAuth(): Promise<UserInfo | null> {
+  try {
+    const res = await api('/api/me')
+    if (!res.ok) return null
+    return res.json()
+  } catch {
+    return null
+  }
+}
+
+// Admin APIs
+export interface AdminUser {
+  id: string
+  github_id: number
+  github_login: string
+  display_name: string | null
+  avatar_url: string | null
+  role: string
+  status: string
+  created_at: string
+  last_login: string | null
+}
+
+export async function listUsers(): Promise<AdminUser[]> {
+  const res = await api('/api/admin/users')
+  if (!res.ok) throw new Error('Forbidden')
+  const data = await res.json()
+  return data.users || []
+}
+
+export async function approveUser(id: string): Promise<void> {
+  const res = await api(`/api/admin/users/${id}/approve`, { method: 'PUT' })
+  if (!res.ok) throw new Error('Failed to approve')
+}
+
+export async function removeUser(id: string): Promise<void> {
+  const res = await api(`/api/admin/users/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Failed to remove')
+}
+
+// Session metadata
+export async function updateSession(id: string, data: {
+  description?: string
+  status?: SessionMetaStatus
+  notes?: string
+}): Promise<void> {
+  const res = await api(`/api/sessions/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) throw new Error('Failed to update session')
+}
+
+// File browser
+export interface FileEntry {
+  path: string
+  name: string
+  size: number
+  modified: number
+}
+
+export async function listSessionFiles(id: string, pattern?: string): Promise<FileEntry[]> {
+  const params = pattern ? `?pattern=${encodeURIComponent(pattern)}` : ''
+  const res = await api(`/api/sessions/${id}/files${params}`)
+  if (!res.ok) throw new Error('Failed to list files')
+  const data = await res.json()
+  return data.files || []
+}
+
+export async function getSessionFile(id: string, path: string): Promise<string> {
+  const res = await api(`/api/sessions/${id}/file?path=${encodeURIComponent(path)}`)
+  if (!res.ok) throw new Error('Failed to read file')
+  const data = await res.json()
+  return data.content
+}
+
+// File CRUD
+export async function writeSessionFile(id: string, path: string, content: string): Promise<void> {
+  const res = await api(`/api/sessions/${id}/file`, {
+    method: 'POST',
+    body: JSON.stringify({ path, content }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+}
+
+export async function deleteSessionFile(id: string, path: string): Promise<void> {
+  const res = await api(`/api/sessions/${id}/file?path=${encodeURIComponent(path)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error(await res.text())
+}
+
+export async function renameSessionFile(id: string, from: string, to: string): Promise<void> {
+  const res = await api(`/api/sessions/${id}/file/rename`, {
+    method: 'POST',
+    body: JSON.stringify({ from, to }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+}
+
+export async function uploadSessionFile(id: string, path: string, data: string): Promise<void> {
+  const res = await api(`/api/sessions/${id}/upload`, {
+    method: 'POST',
+    body: JSON.stringify({ path, data }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+}
+
+// Directory CRUD
+export async function createSessionDir(id: string, path: string): Promise<void> {
+  const res = await api(`/api/sessions/${id}/dir`, {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+}
+
+export async function deleteSessionDir(id: string, path: string): Promise<void> {
+  const res = await api(`/api/sessions/${id}/dir?path=${encodeURIComponent(path)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error(await res.text())
+}
+
+export async function renameSessionDir(id: string, from: string, to: string): Promise<void> {
+  const res = await api(`/api/sessions/${id}/dir/rename`, {
+    method: 'POST',
+    body: JSON.stringify({ from, to }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+}
+
+export function wsUrl(path: string): string {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const token = getToken()
+  // For OAuth mode, extract JWT from cookie
+  const jwt = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith('zeromux_jwt='))?.split('=')[1] || ''
+  const authToken = token || jwt
+  return `${proto}//${location.host}${path}?token=${encodeURIComponent(authToken)}`
+}

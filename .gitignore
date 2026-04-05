@@ -1,0 +1,6 @@
+/target
+.zeromux-worktrees/
+zeromux.log
+zeromux.pid
+frontend/dist/
+frontend/node_modules/
