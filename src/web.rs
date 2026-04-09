@@ -35,6 +35,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}/dir/rename", post(rename_session_dir))
         .route("/api/sessions/{id}/git/log", get(git_log))
         .route("/api/sessions/{id}/git/show", get(git_show))
+        .route("/api/sessions/{id}/notes", get(list_notes))
+        .route("/api/sessions/{id}/notes", post(create_note))
+        .route("/api/sessions/{id}/notes/{note_id}", delete(delete_note))
         .route("/api/directories", get(list_directories))
         .route("/api/admin/users", get(crate::admin::list_users))
         .route(
@@ -408,7 +411,6 @@ async fn session_logs(
 struct UpdateSessionReq {
     description: Option<String>,
     status: Option<crate::session_manager::SessionMeta>,
-    notes: Option<String>,
 }
 
 async fn update_session(
@@ -420,10 +422,69 @@ async fn update_session(
     if !user.is_admin() && !state.sessions.is_owner(&id, &user.id) {
         return StatusCode::FORBIDDEN;
     }
-    if state.sessions.update_session_meta(&id, req.description, req.status, req.notes) {
+    if state.sessions.update_session_meta(&id, req.description, req.status) {
         StatusCode::OK
     } else {
         StatusCode::NOT_FOUND
+    }
+}
+
+// ── Notes API ──
+
+#[derive(serde::Deserialize)]
+struct CreateNoteReq {
+    text: String,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+async fn list_notes(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let work_dir = state
+        .sessions
+        .work_dir(&id)
+        .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
+
+    let notes = state
+        .notes
+        .list_notes(&work_dir)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(serde_json::json!({
+        "notes": notes,
+        "work_dir": work_dir,
+    })))
+}
+
+async fn create_note(
+    State(state): State<Arc<AppState>>,
+    user: axum::Extension<CurrentUser>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(req): Json<CreateNoteReq>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let work_dir = state
+        .sessions
+        .work_dir(&id)
+        .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
+
+    let note = state
+        .notes
+        .create_note(&work_dir, &req.text, &req.tags, &id, &user.login)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(serde_json::json!(note)))
+}
+
+async fn delete_note(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path((_session_id, note_id)): axum::extract::Path<(String, String)>,
+) -> StatusCode {
+    match state.notes.delete_note(&note_id) {
+        Ok(true) => StatusCode::OK,
+        Ok(false) => StatusCode::NOT_FOUND,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 

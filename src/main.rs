@@ -3,6 +3,7 @@ mod admin;
 mod auth;
 mod db;
 mod logger;
+mod notes;
 mod oauth;
 mod pty_bridge;
 mod session_manager;
@@ -91,6 +92,7 @@ pub struct AppState {
     pub default_rows: u16,
     pub logger: Option<logger::Logger>,
     pub db: Option<db::Database>,
+    pub notes: notes::NotesStore,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
     pub jwt_secret: String,
@@ -181,6 +183,9 @@ async fn main() {
         println!("Logging enabled: {}", args.log_dir.as_deref().unwrap_or(""));
     }
 
+    let notes_store = notes::NotesStore::open(std::path::Path::new(&data_dir_str))
+        .expect("Failed to initialize notes store");
+
     if oauth_configured {
         println!("GitHub OAuth enabled");
     } else {
@@ -198,6 +203,7 @@ async fn main() {
         default_rows: args.rows,
         logger,
         db: database,
+        notes: notes_store,
         github_client_id: args.github_client_id,
         github_client_secret: args.github_client_secret,
         jwt_secret,

@@ -16,12 +16,14 @@ interface Props {
   theme: Theme
   onToggleTheme: () => void
   user: UserInfo | null
+  open: boolean
+  onToggle: () => void
+  mobile: boolean
 }
 
 type NewSessionStep = 'closed' | 'pick-type' | 'pick-dir'
 
-export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDelete, onLogout, theme, onToggleTheme, user }: Props) {
-  const [collapsed, setCollapsed] = useState(false)
+export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDelete, onLogout, theme, onToggleTheme, user, open, onToggle, mobile }: Props) {
   const [step, setStep] = useState<NewSessionStep>('closed')
   const [pendingType, setPendingType] = useState<SessionType | null>(null)
   const [showAdmin, setShowAdmin] = useState(false)
@@ -71,11 +73,17 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
     setPendingType(null)
   }
 
-  if (collapsed) {
+  const handleSelect = (id: string) => {
+    onSelect(id)
+    if (mobile) onToggle() // auto-close on mobile after selection
+  }
+
+  // Collapsed state (icon-only rail)
+  if (!open && !mobile) {
     return (
       <div className="w-10 bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col items-center py-2 gap-1 shrink-0">
         <button
-          onClick={() => setCollapsed(false)}
+          onClick={onToggle}
           className="p-1.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)] rounded transition-colors"
           title="Expand sidebar"
         >
@@ -85,7 +93,7 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
         {sessions.map(s => (
           <button
             key={s.id}
-            onClick={() => onSelect(s.id)}
+            onClick={() => handleSelect(s.id)}
             className={`p-1.5 rounded transition-colors ${
               s.id === activeId
                 ? 'bg-[var(--bg-primary)] text-[var(--accent-blue)]'
@@ -105,7 +113,7 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
             <ThemeIcon size={14} />
           </button>
           <button
-            onClick={() => { setCollapsed(false); openTypePicker() }}
+            onClick={() => { onToggle(); openTypePicker() }}
             className="p-1.5 text-[var(--text-secondary)] hover:text-[var(--accent-blue)] rounded transition-colors"
             title="New session"
           >
@@ -123,8 +131,14 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
     )
   }
 
-  return (
-    <div className="w-56 bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col shrink-0">
+  // Mobile: hidden when closed
+  if (!open && mobile) {
+    return null
+  }
+
+  // Full sidebar panel
+  const panel = (
+    <div className={`${mobile ? 'w-64' : 'w-56'} bg-[var(--bg-secondary)] border-r border-[var(--border)] flex flex-col shrink-0 h-full`}>
       {/* Header */}
       <div className="flex items-center justify-between px-3 h-10 border-b border-[var(--border)]">
         <div className="flex items-center gap-1.5 min-w-0">
@@ -162,7 +176,7 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
             <LogOut size={14} />
           </button>
           <button
-            onClick={() => setCollapsed(true)}
+            onClick={onToggle}
             className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)] rounded transition-colors"
             title="Collapse sidebar"
           >
@@ -179,7 +193,7 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
         {sessions.map(s => (
           <div
             key={s.id}
-            onClick={() => onSelect(s.id)}
+            onClick={() => handleSelect(s.id)}
             className={`group flex items-center gap-2 px-3 py-1.5 mx-1 rounded cursor-pointer text-xs transition-colors ${
               s.id === activeId
                 ? 'bg-[var(--bg-primary)] text-[var(--accent-blue)]'
@@ -335,4 +349,16 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
       </div>
     </div>
   )
+
+  // Mobile: overlay with backdrop
+  if (mobile) {
+    return (
+      <div className="fixed inset-0 z-50 flex">
+        {panel}
+        <div className="flex-1 bg-black/50" onClick={onToggle} />
+      </div>
+    )
+  }
+
+  return panel
 }

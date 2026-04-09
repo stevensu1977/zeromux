@@ -1,7 +1,7 @@
-import { useState, useCallback } from 'react'
-import type { SessionInfo, SessionMetaStatus } from '../lib/api'
-import { updateSession } from '../lib/api'
-import { ChevronDown, ChevronRight, FileText, StickyNote, GitBranch } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import type { SessionInfo, SessionMetaStatus, NoteEntry } from '../lib/api'
+import { updateSession, listNotes, createNote, deleteNote } from '../lib/api'
+import { ChevronDown, ChevronRight, FileText, StickyNote, GitBranch, X } from 'lucide-react'
 
 interface Props {
   session: SessionInfo
@@ -10,6 +10,7 @@ interface Props {
   onToggleGit: () => void
   showFiles: boolean
   showGit: boolean
+  onOpenSidebar?: () => void
 }
 
 const STATUS_OPTIONS: { value: SessionMetaStatus; label: string; color: string }[] = [
@@ -24,17 +25,30 @@ export function StatusDot({ status }: { status: SessionMetaStatus }) {
   return <span className={`inline-block w-2 h-2 rounded-full ${opt?.color || 'bg-gray-400'} shrink-0`} />
 }
 
-export default function SessionInfoBar({ session, onUpdate, onToggleFiles, onToggleGit, showFiles, showGit }: Props) {
+export default function SessionInfoBar({ session, onUpdate, onToggleFiles, onToggleGit, showFiles, showGit, onOpenSidebar }: Props) {
   const [expanded, setExpanded] = useState(false)
   const [desc, setDesc] = useState(session.description)
-  const [notes, setNotes] = useState(session.notes)
+  const [notes, setNotes] = useState<NoteEntry[]>([])
+  const [noteInput, setNoteInput] = useState('')
+  const [submitting, setSubmitting] = useState(false)
 
-  const save = useCallback(async (data: { description?: string; status?: SessionMetaStatus; notes?: string }) => {
+  const save = useCallback(async (data: { description?: string; status?: SessionMetaStatus }) => {
     try {
       await updateSession(session.id, data)
       onUpdate(data)
     } catch { /* ignore */ }
   }, [session.id, onUpdate])
+
+  const loadNotes = useCallback(async () => {
+    try {
+      const data = await listNotes(session.id)
+      setNotes(data.notes)
+    } catch { /* ignore */ }
+  }, [session.id])
+
+  useEffect(() => {
+    if (expanded) loadNotes()
+  }, [expanded, loadNotes])
 
   const handleDescBlur = () => {
     if (desc !== session.description) {
@@ -42,28 +56,53 @@ export default function SessionInfoBar({ session, onUpdate, onToggleFiles, onTog
     }
   }
 
-  const handleNotesBlur = () => {
-    if (notes !== session.notes) {
-      save({ notes })
-    }
-  }
-
   const handleStatusChange = (status: SessionMetaStatus) => {
     save({ status })
   }
 
-  // Sync from props when session changes
+  const handleAddNote = async () => {
+    const text = noteInput.trim()
+    if (!text || submitting) return
+    setSubmitting(true)
+    try {
+      const note = await createNote(session.id, text)
+      setNotes(prev => [note, ...prev])
+      setNoteInput('')
+    } catch { /* ignore */ }
+    setSubmitting(false)
+  }
+
+  const handleDeleteNote = async (noteId: string) => {
+    try {
+      await deleteNote(session.id, noteId)
+      setNotes(prev => prev.filter(n => n.id !== noteId))
+    } catch { /* ignore */ }
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleAddNote()
+    }
+  }
+
+  // Sync description from props
   if (desc !== session.description && document.activeElement?.tagName !== 'INPUT') {
     setDesc(session.description)
-  }
-  if (notes !== session.notes && document.activeElement?.tagName !== 'TEXTAREA') {
-    setNotes(session.notes)
   }
 
   return (
     <div className="border-b border-[var(--border)] bg-[var(--bg-secondary)]">
       {/* Collapsed bar */}
       <div className="flex items-center gap-2 px-3 h-9">
+        {onOpenSidebar && (
+          <button
+            onClick={onOpenSidebar}
+            className="p-1 -ml-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+          </button>
+        )}
         <button
           onClick={() => setExpanded(!expanded)}
           className="p-0.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
@@ -140,19 +179,88 @@ export default function SessionInfoBar({ session, onUpdate, onToggleFiles, onTog
           <div>
             <div className="flex items-center gap-1 mb-1">
               <StickyNote size={10} className="text-[var(--text-muted)]" />
-              <span className="text-[10px] text-[var(--text-muted)] uppercase">Notes</span>
+              <span className="text-[10px] text-[var(--text-muted)] uppercase">
+                Notes {notes.length > 0 && `(${notes.length})`}
+              </span>
             </div>
-            <textarea
-              value={notes}
-              onChange={e => setNotes(e.target.value)}
-              onBlur={handleNotesBlur}
-              placeholder="Add notes for yourself..."
-              rows={2}
-              className="w-full text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-2 py-1.5 text-[var(--text-primary)] outline-none focus:border-[var(--accent-blue)] placeholder-[var(--text-muted)] resize-y"
+
+            {/* Input */}
+            <input
+              value={noteInput}
+              onChange={e => setNoteInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Add a note... (Enter to save)"
+              disabled={submitting}
+              className="w-full text-xs bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-2 py-1.5 text-[var(--text-primary)] outline-none focus:border-[var(--accent-blue)] placeholder-[var(--text-muted)] mb-1"
             />
+
+            {/* Notes list */}
+            {notes.length > 0 && (
+              <div className="max-h-40 overflow-y-auto space-y-0.5">
+                {notes.map(note => (
+                  <NoteItem
+                    key={note.id}
+                    note={note}
+                    onDelete={() => handleDeleteNote(note.id)}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
     </div>
   )
+}
+
+function NoteItem({ note, onDelete }: { note: NoteEntry; onDelete: () => void }) {
+  const [hovered, setHovered] = useState(false)
+
+  return (
+    <div
+      className="flex items-start gap-1.5 px-1.5 py-1 rounded hover:bg-[var(--bg-primary)] group"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <span className="text-[10px] text-[var(--text-muted)] shrink-0 w-[72px] pt-px">
+        {formatNoteDate(note.created_at)}
+      </span>
+      <span className="text-[11px] text-[var(--text-primary)] flex-1 break-words leading-snug">
+        {note.text}
+      </span>
+      {note.tags.length > 0 && (
+        <span className="flex gap-0.5 shrink-0">
+          {note.tags.map(tag => (
+            <span
+              key={tag}
+              className="text-[9px] px-1 py-0 rounded bg-[var(--bg-tertiary)] text-[var(--accent-blue)]"
+            >
+              {tag}
+            </span>
+          ))}
+        </span>
+      )}
+      {hovered && (
+        <button
+          onClick={e => { e.stopPropagation(); onDelete() }}
+          className="p-0.5 text-[var(--text-muted)] hover:text-[var(--accent-red)] shrink-0 transition-colors"
+        >
+          <X size={10} />
+        </button>
+      )}
+    </div>
+  )
+}
+
+function formatNoteDate(iso: string): string {
+  try {
+    const d = new Date(iso)
+    const mo = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    const h = String(d.getHours()).padStart(2, '0')
+    const m = String(d.getMinutes()).padStart(2, '0')
+    return `${mo}-${day} ${h}:${m}`
+  } catch {
+    return iso.slice(0, 16)
+  }
 }

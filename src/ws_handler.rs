@@ -7,7 +7,9 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
+use tokio::sync::broadcast;
 
+use crate::session_manager::SessionInput;
 use crate::{auth, AppState};
 
 #[derive(serde::Deserialize)]
@@ -47,12 +49,17 @@ pub async fn ws_terminal(
 }
 
 async fn handle_ws(socket: WebSocket, session_id: String, state: Arc<AppState>) {
-    let mut output_rx = match state.sessions.take_output_rx(&session_id) {
+    // Subscribe to broadcast (multi-client safe)
+    let mut event_rx = match state.sessions.subscribe(&session_id) {
         Some(rx) => rx,
         None => {
-            tracing::error!("Session {} not found or already connected", session_id);
+            tracing::error!("Session {} not found", session_id);
             return;
         }
+    };
+    let input_tx = match state.sessions.input_tx(&session_id) {
+        Some(tx) => tx,
+        None => return,
     };
 
     let (mut ws_sink, mut ws_stream) = socket.split();
@@ -67,26 +74,22 @@ async fn handle_ws(socket: WebSocket, session_id: String, state: Arc<AppState>) 
             .await
             .is_err()
         {
-            state.sessions.return_output_rx(&session_id, output_rx);
             return;
         }
     }
 
-    // Single select! loop — ensures output_rx is always returned on disconnect
+    // Subscribe loop: receive broadcast events + forward client input
     loop {
         tokio::select! {
-            data = output_rx.recv() => {
-                match data {
-                    Some(bytes) => {
-                        let b64 = base64::Engine::encode(
-                            &base64::engine::general_purpose::STANDARD, &bytes);
-
+            result = event_rx.recv() => {
+                match result {
+                    Ok(b64) => {
                         // Log output
                         if let Some(ref log) = logger {
                             log.log_pty_output(&session_id, &b64);
                         }
 
-                        // Push to scrollback buffer for future reconnects
+                        // Push to scrollback buffer
                         state.sessions.push_scrollback(&session_id, b64.clone());
 
                         let msg = serde_json::json!({"type": "output", "data": b64});
@@ -98,7 +101,11 @@ async fn handle_ws(socket: WebSocket, session_id: String, state: Arc<AppState>) 
                             break;
                         }
                     }
-                    None => break, // PTY closed
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("PTY WS client lagged by {} messages for session {}", n, session_id);
+                        // Continue — client will miss some output but can still operate
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
 
@@ -115,17 +122,17 @@ async fn handle_ws(socket: WebSocket, session_id: String, state: Arc<AppState>) 
                                         &base64::engine::general_purpose::STANDARD,
                                         &data,
                                     ) {
-                                        let _ = state.sessions.write_to_session(&session_id, &bytes);
+                                        let _ = input_tx.send(SessionInput::PtyData(bytes)).await;
                                     }
                                 }
                                 ClientMsg::Resize { cols, rows } => {
-                                    let _ = state.sessions.resize_session(&session_id, cols, rows);
+                                    let _ = input_tx.send(SessionInput::PtyResize(cols, rows)).await;
                                 }
                             }
                         }
                     }
                     Some(Ok(Message::Binary(data))) => {
-                        let _ = state.sessions.write_to_session(&session_id, &data);
+                        let _ = input_tx.send(SessionInput::PtyData(data.to_vec())).await;
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     _ => {}
@@ -134,7 +141,5 @@ async fn handle_ws(socket: WebSocket, session_id: String, state: Arc<AppState>) 
         }
     }
 
-    // Always return the receiver so the session can be reconnected
-    state.sessions.return_output_rx(&session_id, output_rx);
     tracing::info!("WebSocket disconnected for session {}", session_id);
 }

@@ -1,10 +1,13 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 /// Max scrollback buffer size in bytes (2MB of encoded data)
 const SCROLLBACK_MAX_BYTES: usize = 2 * 1024 * 1024;
+
+/// Broadcast channel capacity — slow clients that fall behind will get Lagged error
+const BROADCAST_CAPACITY: usize = 512;
 
 use crate::acp::kiro_process::KiroProcess;
 use crate::acp::process::AcpProcess;
@@ -54,26 +57,16 @@ impl std::fmt::Display for SessionType {
     }
 }
 
-/// A terminal session backed by PTY (for tmux/bash)
-struct PtySession {
-    pty: PtyHandle,
-    output_rx: Option<mpsc::Receiver<Vec<u8>>>,
-}
-
-/// A Claude Code session backed by stream-json protocol
-struct AcpSession {
-    process: Option<AcpProcess>,
-}
-
-/// A Kiro session backed by JSON-RPC 2.0 ACP protocol
-struct KiroSession {
-    process: Option<KiroProcess>,
-}
-
-enum SessionBackend {
-    Pty(PtySession),
-    Acp(AcpSession),
-    Kiro(KiroSession),
+/// Input commands from WS clients to the session process
+pub enum SessionInput {
+    /// PTY: raw bytes (base64-decoded by WS handler)
+    PtyData(Vec<u8>),
+    /// PTY: resize
+    PtyResize(u16, u16),
+    /// ACP/Kiro: prompt text
+    Prompt(String),
+    /// ACP/Kiro: cancel/kill
+    Cancel,
 }
 
 pub struct Session {
@@ -86,10 +79,14 @@ pub struct Session {
     pub owner_id: String,
     pub description: String,
     pub status: SessionMeta,
-    pub notes: String,
-    backend: SessionBackend,
+    /// Broadcast channel: fan-out task writes, all WS clients subscribe
+    event_tx: broadcast::Sender<String>,
+    /// Input channel: any WS client writes, fan-out task forwards to process
+    input_tx: mpsc::Sender<SessionInput>,
     /// Git worktree path for ACP sessions (cleaned up on delete)
     worktree_path: Option<PathBuf>,
+    /// PTY child PID kept for /proc lookup (PTY sessions only)
+    pty_pid: Option<u32>,
     /// Output history for replay on reconnect (base64 for PTY, JSON for ACP/Kiro)
     scrollback: VecDeque<String>,
     scrollback_bytes: usize,
@@ -110,7 +107,6 @@ pub struct SessionInfo {
     pub work_dir: String,
     pub description: String,
     pub status: SessionMeta,
-    pub notes: String,
 }
 
 // ── Git worktree helpers ──
@@ -167,7 +163,6 @@ fn remove_worktree(repo_dir: &Path, wt_path: &Path) {
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             tracing::warn!("git worktree remove failed: {}", stderr);
-            // Fallback: try to remove directory directly
             let _ = std::fs::remove_dir_all(wt_path);
         }
         Err(e) => {
@@ -220,7 +215,7 @@ impl SessionManager {
         } else {
             Some(work_dir)
         };
-        let (pty, rx) = PtyHandle::spawn(shell, &[], &[], cols, rows, cwd)
+        let (pty, mut output_rx) = PtyHandle::spawn(shell, &[], &[], cols, rows, cwd)
             .map_err(|e| format!("Failed to spawn PTY: {}", e))?;
 
         let effective_dir = if work_dir.is_empty() || work_dir == "." {
@@ -230,6 +225,47 @@ impl SessionManager {
         };
 
         let id = uuid::Uuid::new_v4().to_string();
+        let (event_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
+        let (input_tx, mut input_rx) = mpsc::channel::<SessionInput>(64);
+
+        let pid = pty.pid();
+        let event_tx_clone = event_tx.clone();
+        let sid = id.clone();
+
+        // Spawn fan-out task: owns the PtyHandle, reads output, handles input
+        tokio::spawn(async move {
+            let mut pty = pty; // move pty into task
+            loop {
+                tokio::select! {
+                    data = output_rx.recv() => {
+                        match data {
+                            Some(bytes) => {
+                                let b64 = base64::Engine::encode(
+                                    &base64::engine::general_purpose::STANDARD, &bytes);
+                                let _ = event_tx_clone.send(b64);
+                            }
+                            None => {
+                                tracing::info!("PTY output closed for session {}", sid);
+                                break;
+                            }
+                        }
+                    }
+                    input = input_rx.recv() => {
+                        match input {
+                            Some(SessionInput::PtyData(bytes)) => {
+                                let _ = pty.write_input(&bytes);
+                            }
+                            Some(SessionInput::PtyResize(cols, rows)) => {
+                                let _ = pty.resize(cols, rows);
+                            }
+                            None => break,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        });
+
         let session = Session {
             id: id.clone(),
             name,
@@ -240,12 +276,10 @@ impl SessionManager {
             owner_id: owner_id.to_string(),
             description: String::new(),
             status: SessionMeta::Running,
-            notes: String::new(),
-            backend: SessionBackend::Pty(PtySession {
-                pty,
-                output_rx: Some(rx),
-            }),
+            event_tx,
+            input_tx,
             worktree_path: None,
+            pty_pid: pid,
             scrollback: VecDeque::new(),
             scrollback_bytes: 0,
         };
@@ -269,13 +303,21 @@ impl SessionManager {
         let process = AcpProcess::spawn(claude_path, effective_dir.to_str().unwrap_or("."))
             .await
             .map_err(|e| {
-                // Clean up worktree if spawn fails
                 if let Some(wt) = &worktree_path {
                     let base = PathBuf::from(work_dir);
                     remove_worktree(&base, wt);
                 }
                 format!("Failed to spawn Claude: {}", e)
             })?;
+
+        let (event_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
+        let (input_tx, input_rx) = mpsc::channel::<SessionInput>(64);
+
+        let event_tx_clone = event_tx.clone();
+        let sid = id.clone();
+
+        // Spawn fan-out task for ACP process
+        spawn_acp_fanout(sid, process, event_tx_clone, input_rx);
 
         let session = Session {
             id: id.clone(),
@@ -287,11 +329,10 @@ impl SessionManager {
             owner_id: owner_id.to_string(),
             description: String::new(),
             status: SessionMeta::Running,
-            notes: String::new(),
-            backend: SessionBackend::Acp(AcpSession {
-                process: Some(process),
-            }),
+            event_tx,
+            input_tx,
             worktree_path,
+            pty_pid: None,
             scrollback: VecDeque::new(),
             scrollback_bytes: 0,
         };
@@ -322,6 +363,15 @@ impl SessionManager {
                 format!("Failed to spawn Kiro: {}", e)
             })?;
 
+        let (event_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
+        let (input_tx, input_rx) = mpsc::channel::<SessionInput>(64);
+
+        let event_tx_clone = event_tx.clone();
+        let sid = id.clone();
+
+        // Spawn fan-out task for Kiro process
+        spawn_kiro_fanout(sid, process, event_tx_clone, input_rx);
+
         let session = Session {
             id: id.clone(),
             name,
@@ -332,11 +382,10 @@ impl SessionManager {
             owner_id: owner_id.to_string(),
             description: String::new(),
             status: SessionMeta::Running,
-            notes: String::new(),
-            backend: SessionBackend::Kiro(KiroSession {
-                process: Some(process),
-            }),
+            event_tx,
+            input_tx,
             worktree_path,
+            pty_pid: None,
             scrollback: VecDeque::new(),
             scrollback_bytes: 0,
         };
@@ -365,7 +414,6 @@ impl SessionManager {
                 work_dir: s.work_dir.clone(),
                 description: s.description.clone(),
                 status: s.status,
-                notes: s.notes.clone(),
             })
             .collect()
     }
@@ -383,9 +431,8 @@ impl SessionManager {
     pub fn remove_session(&self, id: &str) -> bool {
         let removed = self.sessions.lock().unwrap().remove(id);
         if let Some(session) = removed {
-            // Clean up git worktree if one was created
+            // Dropping session closes event_tx + input_tx → fan-out task exits
             if let Some(wt_path) = &session.worktree_path {
-                // Find the repo root (parent of .zeromux-worktrees)
                 if let Some(worktrees_dir) = wt_path.parent() {
                     if let Some(repo_dir) = worktrees_dir.parent() {
                         remove_worktree(repo_dir, wt_path);
@@ -398,101 +445,34 @@ impl SessionManager {
         }
     }
 
-    // --- PTY session methods ---
+    // ── Broadcast API: subscribe to session events ──
 
-    pub fn take_output_rx(&self, id: &str) -> Option<mpsc::Receiver<Vec<u8>>> {
+    /// Subscribe to a session's event broadcast. Returns None if session not found.
+    pub fn subscribe(&self, id: &str) -> Option<broadcast::Receiver<String>> {
         self.sessions
             .lock()
             .unwrap()
-            .get_mut(id)
-            .and_then(|s| match &mut s.backend {
-                SessionBackend::Pty(pty) => pty.output_rx.take(),
-                _ => None,
-            })
+            .get(id)
+            .map(|s| s.event_tx.subscribe())
     }
 
-    pub fn return_output_rx(&self, id: &str, rx: mpsc::Receiver<Vec<u8>>) {
-        if let Some(session) = self.sessions.lock().unwrap().get_mut(id) {
-            if let SessionBackend::Pty(pty) = &mut session.backend {
-                pty.output_rx = Some(rx);
-            }
-        }
-    }
-
-    pub fn write_to_session(&self, id: &str, data: &[u8]) -> Result<(), String> {
+    /// Get the input sender for a session. Returns None if session not found.
+    pub fn input_tx(&self, id: &str) -> Option<mpsc::Sender<SessionInput>> {
         self.sessions
             .lock()
             .unwrap()
-            .get_mut(id)
-            .ok_or_else(|| "Session not found".to_string())
-            .and_then(|s| match &mut s.backend {
-                SessionBackend::Pty(pty) => pty.pty.write_input(data).map_err(|e| e.to_string()),
-                _ => Err("Not a PTY session".to_string()),
-            })
+            .get(id)
+            .map(|s| s.input_tx.clone())
     }
 
-    pub fn resize_session(&self, id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        let mut sessions = self.sessions.lock().unwrap();
-        let session = sessions
-            .get_mut(id)
-            .ok_or_else(|| "Session not found".to_string())?;
-        session.cols = cols;
-        session.rows = rows;
-        match &session.backend {
-            SessionBackend::Pty(pty) => pty.pty.resize(cols, rows).map_err(|e| e.to_string()),
-            SessionBackend::Acp(_) | SessionBackend::Kiro(_) => Ok(()),
-        }
-    }
+    // (PTY write/resize now handled via input_tx → fan-out task)
 
-    // --- ACP session methods ---
-
-    pub fn take_acp_process(&self, id: &str) -> Option<AcpProcess> {
-        self.sessions
-            .lock()
-            .unwrap()
-            .get_mut(id)
-            .and_then(|s| match &mut s.backend {
-                SessionBackend::Acp(acp) => acp.process.take(),
-                _ => None,
-            })
-    }
-
-    pub fn return_acp_process(&self, id: &str, process: AcpProcess) {
-        if let Some(session) = self.sessions.lock().unwrap().get_mut(id) {
-            if let SessionBackend::Acp(acp) = &mut session.backend {
-                acp.process = Some(process);
-            }
-        }
-    }
-
-    // --- Kiro session methods ---
-
-    pub fn take_kiro_process(&self, id: &str) -> Option<KiroProcess> {
-        self.sessions
-            .lock()
-            .unwrap()
-            .get_mut(id)
-            .and_then(|s| match &mut s.backend {
-                SessionBackend::Kiro(k) => k.process.take(),
-                _ => None,
-            })
-    }
-
-    pub fn return_kiro_process(&self, id: &str, process: KiroProcess) {
-        if let Some(session) = self.sessions.lock().unwrap().get_mut(id) {
-            if let SessionBackend::Kiro(k) = &mut session.backend {
-                k.process = Some(process);
-            }
-        }
-    }
-
-    /// Update session metadata (description, status, notes)
+    /// Update session metadata (description, status)
     pub fn update_session_meta(
         &self,
         id: &str,
         description: Option<String>,
         status: Option<SessionMeta>,
-        notes: Option<String>,
     ) -> bool {
         if let Some(session) = self.sessions.lock().unwrap().get_mut(id) {
             if let Some(d) = description {
@@ -500,9 +480,6 @@ impl SessionManager {
             }
             if let Some(s) = status {
                 session.status = s;
-            }
-            if let Some(n) = notes {
-                session.notes = n;
             }
             true
         } else {
@@ -521,7 +498,6 @@ impl SessionManager {
             let data_len = data.len();
             s.scrollback.push_back(data);
             s.scrollback_bytes += data_len;
-            // Trim from front if over limit
             while s.scrollback_bytes > SCROLLBACK_MAX_BYTES && !s.scrollback.is_empty() {
                 if let Some(removed) = s.scrollback.pop_front() {
                     s.scrollback_bytes -= removed.len();
@@ -547,9 +523,90 @@ impl SessionManager {
 
     /// Get PTY child PID for a session
     pub fn pty_pid(&self, id: &str) -> Option<u32> {
-        self.sessions.lock().unwrap().get(id).and_then(|s| match &s.backend {
-            SessionBackend::Pty(pty) => pty.pty.pid(),
-            _ => None,
-        })
+        self.sessions.lock().unwrap().get(id).and_then(|s| s.pty_pid)
     }
+}
+
+// ── Fan-out tasks for ACP/Kiro processes ──
+
+fn spawn_acp_fanout(
+    sid: String,
+    mut process: AcpProcess,
+    event_tx: broadcast::Sender<String>,
+    mut input_rx: mpsc::Receiver<SessionInput>,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                event = process.event_rx.recv() => {
+                    match event {
+                        Some(evt) => {
+                            let json = match serde_json::to_string(&evt) {
+                                Ok(j) => j,
+                                Err(_) => continue,
+                            };
+                            let _ = event_tx.send(json);
+                        }
+                        None => break,
+                    }
+                }
+                input = input_rx.recv() => {
+                    match input {
+                        Some(SessionInput::Prompt(text)) => {
+                            if let Err(e) = process.send_prompt(&text).await {
+                                tracing::warn!("ACP send_prompt failed for {}: {}", sid, e);
+                            }
+                        }
+                        Some(SessionInput::Cancel) => {
+                            process.kill().await;
+                        }
+                        None => break, // all input senders dropped (session removed)
+                        _ => {} // ignore PTY commands
+                    }
+                }
+            }
+        }
+        tracing::info!("ACP fan-out task ended for session {}", sid);
+    });
+}
+
+fn spawn_kiro_fanout(
+    sid: String,
+    mut process: KiroProcess,
+    event_tx: broadcast::Sender<String>,
+    mut input_rx: mpsc::Receiver<SessionInput>,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                event = process.event_rx.recv() => {
+                    match event {
+                        Some(evt) => {
+                            let json = match serde_json::to_string(&evt) {
+                                Ok(j) => j,
+                                Err(_) => continue,
+                            };
+                            let _ = event_tx.send(json);
+                        }
+                        None => break,
+                    }
+                }
+                input = input_rx.recv() => {
+                    match input {
+                        Some(SessionInput::Prompt(text)) => {
+                            if let Err(e) = process.send_prompt(&text).await {
+                                tracing::warn!("Kiro send_prompt failed for {}: {}", sid, e);
+                            }
+                        }
+                        Some(SessionInput::Cancel) => {
+                            process.kill().await;
+                        }
+                        None => break,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        tracing::info!("Kiro fan-out task ended for session {}", sid);
+    });
 }

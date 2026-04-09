@@ -7,9 +7,9 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use std::sync::Arc;
+use tokio::sync::broadcast;
 
-use super::process::AcpEvent;
-use crate::session_manager::SessionType;
+use crate::session_manager::SessionInput;
 use crate::{auth, AppState};
 
 #[derive(serde::Deserialize)]
@@ -24,37 +24,6 @@ enum ClientMsg {
     Prompt { text: String },
     #[serde(rename = "cancel")]
     Cancel,
-}
-
-/// Trait to unify Claude AcpProcess and KiroProcess for the WS handler
-trait AgentProcess: Send {
-    fn event_rx(&mut self) -> &mut tokio::sync::mpsc::Receiver<AcpEvent>;
-    fn send_prompt(&mut self, text: &str) -> impl std::future::Future<Output = Result<(), std::io::Error>> + Send;
-    fn kill(&mut self) -> impl std::future::Future<Output = ()> + Send;
-}
-
-impl AgentProcess for super::process::AcpProcess {
-    fn event_rx(&mut self) -> &mut tokio::sync::mpsc::Receiver<AcpEvent> {
-        &mut self.event_rx
-    }
-    async fn send_prompt(&mut self, text: &str) -> Result<(), std::io::Error> {
-        self.send_prompt(text).await
-    }
-    async fn kill(&mut self) {
-        self.kill().await
-    }
-}
-
-impl AgentProcess for super::kiro_process::KiroProcess {
-    fn event_rx(&mut self) -> &mut tokio::sync::mpsc::Receiver<AcpEvent> {
-        &mut self.event_rx
-    }
-    async fn send_prompt(&mut self, text: &str) -> Result<(), std::io::Error> {
-        self.send_prompt(text).await
-    }
-    async fn kill(&mut self) {
-        self.kill().await
-    }
 }
 
 pub async fn ws_acp(
@@ -80,52 +49,29 @@ pub async fn ws_acp(
 }
 
 async fn handle_acp_ws(socket: WebSocket, session_id: String, state: Arc<AppState>) {
-    let session_type = state.sessions.session_type(&session_id);
+    // Subscribe to broadcast (multi-client safe — no take/return)
+    let mut event_rx = match state.sessions.subscribe(&session_id) {
+        Some(rx) => rx,
+        None => {
+            tracing::error!("ACP session {} not found", session_id);
+            return;
+        }
+    };
+    let input_tx = match state.sessions.input_tx(&session_id) {
+        Some(tx) => tx,
+        None => return,
+    };
 
-    match session_type {
-        Some(SessionType::Claude) => {
-            if let Some(process) = state.sessions.take_acp_process(&session_id) {
-                run_agent_ws(socket, &session_id, process, &state, |st, id, p| {
-                    st.sessions.return_acp_process(id, p);
-                }).await;
-            } else {
-                tracing::error!("ACP session {} not found or already connected", session_id);
-            }
-        }
-        Some(SessionType::Kiro) => {
-            if let Some(process) = state.sessions.take_kiro_process(&session_id) {
-                run_agent_ws(socket, &session_id, process, &state, |st, id, p| {
-                    st.sessions.return_kiro_process(id, p);
-                }).await;
-            } else {
-                tracing::error!("Kiro session {} not found or already connected", session_id);
-            }
-        }
-        _ => {
-            tracing::error!("Session {} is not an ACP session", session_id);
-        }
-    }
-}
-
-async fn run_agent_ws<P, F>(
-    socket: WebSocket,
-    session_id: &str,
-    mut process: P,
-    state: &Arc<AppState>,
-    return_fn: F,
-) where
-    P: AgentProcess + 'static,
-    F: FnOnce(&AppState, &str, P),
-{
     let (mut ws_sink, mut ws_stream) = socket.split();
 
+    // Send connected message
     let init_msg = serde_json::json!({"type": "system", "message": "connected"});
     let _ = ws_sink
         .send(Message::Text(init_msg.to_string().into()))
         .await;
 
     // Replay event history for reconnecting clients
-    let history = state.sessions.get_scrollback(session_id);
+    let history = state.sessions.get_scrollback(&session_id);
     let has_history = !history.is_empty();
     for json in history {
         if ws_sink
@@ -133,7 +79,6 @@ async fn run_agent_ws<P, F>(
             .await
             .is_err()
         {
-            return_fn(state, session_id, process);
             return;
         }
     }
@@ -143,39 +88,32 @@ async fn run_agent_ws<P, F>(
         let _ = ws_sink.send(Message::Text(done_msg.to_string().into())).await;
     }
 
-    let sid = session_id.to_string();
     let logger = state.logger.clone();
 
-    // Single select! loop — no spawned tasks, so process is always returned promptly
+    // Subscribe loop: receive broadcast events + forward client input
     loop {
         tokio::select! {
-            event = process.event_rx().recv() => {
-                match event {
-                    Some(evt) => {
-                        let is_exit = matches!(evt, AcpEvent::Exit { .. });
-                        let json = match serde_json::to_string(&evt) {
-                            Ok(j) => j,
-                            Err(_) => continue,
-                        };
-
+            result = event_rx.recv() => {
+                match result {
+                    Ok(json) => {
                         // Log ACP event
                         if let Some(ref log) = logger {
                             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
-                                log.log_acp_event(&sid, &val);
+                                log.log_acp_event(&session_id, &val);
                             }
                         }
 
-                        // Push to scrollback buffer for future reconnects
-                        state.sessions.push_scrollback(&sid, json.clone());
+                        // Push to scrollback buffer
+                        state.sessions.push_scrollback(&session_id, json.clone());
 
                         if ws_sink.send(Message::Text(json.into())).await.is_err() {
                             break;
                         }
-                        if is_exit {
-                            break;
-                        }
                     }
-                    None => break,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("ACP WS client lagged by {} messages for session {}", n, session_id);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
 
@@ -186,15 +124,12 @@ async fn run_agent_ws<P, F>(
                             match client_msg {
                                 ClientMsg::Prompt { text } => {
                                     if let Some(ref log) = logger {
-                                        log.log_acp_input(&sid, &text);
+                                        log.log_acp_input(&session_id, &text);
                                     }
-                                    if let Err(e) = process.send_prompt(&text).await {
-                                        let err = serde_json::json!({"type": "error", "message": format!("Send failed: {}", e)});
-                                        let _ = ws_sink.send(Message::Text(err.to_string().into())).await;
-                                    }
+                                    let _ = input_tx.send(SessionInput::Prompt(text)).await;
                                 }
                                 ClientMsg::Cancel => {
-                                    process.kill().await;
+                                    let _ = input_tx.send(SessionInput::Cancel).await;
                                 }
                             }
                         }
@@ -206,6 +141,5 @@ async fn run_agent_ws<P, F>(
         }
     }
 
-    return_fn(state, &sid, process);
-    tracing::info!("ACP WebSocket disconnected for session {}", sid);
+    tracing::info!("ACP WebSocket disconnected for session {}", session_id);
 }

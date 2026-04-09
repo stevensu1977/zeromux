@@ -11,7 +11,16 @@ export interface SessionInfo {
   work_dir: string
   description: string
   status: SessionMetaStatus
-  notes: string
+}
+
+export interface NoteEntry {
+  id: string
+  work_dir: string
+  text: string
+  created_at: string
+  session_id: string
+  author: string
+  tags: string[]
 }
 
 export interface SessionStatus {
@@ -175,13 +184,35 @@ export async function removeUser(id: string): Promise<void> {
 export async function updateSession(id: string, data: {
   description?: string
   status?: SessionMetaStatus
-  notes?: string
 }): Promise<void> {
   const res = await api(`/api/sessions/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(data),
   })
   if (!res.ok) throw new Error('Failed to update session')
+}
+
+// Notes API
+export async function listNotes(sessionId: string): Promise<{ notes: NoteEntry[]; work_dir: string }> {
+  const res = await api(`/api/sessions/${sessionId}/notes`)
+  if (!res.ok) throw new Error('Failed to list notes')
+  return res.json()
+}
+
+export async function createNote(sessionId: string, text: string, tags?: string[]): Promise<NoteEntry> {
+  const res = await api(`/api/sessions/${sessionId}/notes`, {
+    method: 'POST',
+    body: JSON.stringify({ text, tags: tags || [] }),
+  })
+  if (!res.ok) throw new Error('Failed to create note')
+  return res.json()
+}
+
+export async function deleteNote(sessionId: string, noteId: string): Promise<void> {
+  const res = await api(`/api/sessions/${sessionId}/notes/${noteId}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error('Failed to delete note')
 }
 
 // File browser

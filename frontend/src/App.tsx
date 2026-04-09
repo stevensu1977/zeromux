@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import type { SessionInfo, SessionType, UserInfo } from './lib/api'
 import { listSessions, createSession, deleteSession, checkAuth, legacyLogin, clearAuth } from './lib/api'
 import { useTheme } from './lib/theme'
@@ -21,6 +21,8 @@ export default function App() {
   const [activeId, setActiveId] = useState<string | null>(null)
   const [overlay, setOverlay] = useState<Record<string, OverlayView>>({})
   const themeCtx = useTheme()
+  const isMobile = useMemo(() => window.innerWidth < 768, [])
+  const [sidebarOpen, setSidebarOpen] = useState(!isMobile)
 
   const initAuth = useCallback(async () => {
     const me = await checkAuth()
@@ -134,6 +136,9 @@ export default function App() {
         theme={themeCtx.theme}
         onToggleTheme={themeCtx.toggle}
         user={user}
+        open={sidebarOpen}
+        onToggle={() => setSidebarOpen(v => !v)}
+        mobile={isMobile}
       />
       <main className="flex-1 min-w-0 flex flex-col">
         {/* Info bar for active session */}
@@ -146,7 +151,19 @@ export default function App() {
             onToggleGit={() => toggleOverlay(activeSession.id, 'git')}
             showFiles={(overlay[activeSession.id] || 'none') === 'files'}
             showGit={(overlay[activeSession.id] || 'none') === 'git'}
+            onOpenSidebar={isMobile && !sidebarOpen ? () => setSidebarOpen(true) : undefined}
           />
+        )}
+        {/* Mobile: show menu button when no active session */}
+        {!activeSession && isMobile && !sidebarOpen && (
+          <div className="h-9 border-b border-[var(--border)] bg-[var(--bg-secondary)] flex items-center px-3">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+            </button>
+          </div>
         )}
 
         {/* Main content area */}
