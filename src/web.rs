@@ -39,6 +39,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}/notes", post(create_note))
         .route("/api/sessions/{id}/notes/{note_id}", delete(delete_note))
         .route("/api/directories", get(list_directories))
+        .route("/api/tmux/sessions", get(list_tmux_sessions))
         .route("/api/admin/users", get(crate::admin::list_users))
         .route(
             "/api/admin/users/{id}/approve",
@@ -236,6 +237,38 @@ async fn list_directories(
     })))
 }
 
+// ── Tmux session listing ──
+
+async fn list_tmux_sessions() -> Json<serde_json::Value> {
+    let output = std::process::Command::new("tmux")
+        .args(["ls", "-F", "#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}"])
+        .output();
+
+    let sessions: Vec<serde_json::Value> = match output {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter_map(|line| {
+                    let fields: Vec<&str> = line.split('\t').collect();
+                    if fields.len() >= 4 {
+                        Some(serde_json::json!({
+                            "name": fields[0],
+                            "windows": fields[1].parse::<u32>().unwrap_or(0),
+                            "attached": fields[2].parse::<u32>().unwrap_or(0),
+                            "created": fields[3].parse::<i64>().unwrap_or(0),
+                        }))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+
+    Json(serde_json::json!({ "sessions": sessions }))
+}
+
 // ── Session CRUD ──
 
 #[derive(serde::Deserialize)]
@@ -244,6 +277,7 @@ struct CreateSessionReq {
     #[serde(rename = "type", default = "default_session_type")]
     session_type: crate::session_manager::SessionType,
     work_dir: Option<String>,
+    tmux_target: Option<String>,
 }
 
 fn default_session_type() -> crate::session_manager::SessionType {
@@ -258,7 +292,7 @@ async fn create_session(
     let type_label = req.session_type.to_string();
     let work_dir = req.work_dir.unwrap_or_else(|| state.work_dir.clone());
 
-    let name = req.name.unwrap_or_else(|| {
+    let name = req.name.or_else(|| req.tmux_target.clone()).unwrap_or_else(|| {
         // Use directory basename as part of session name
         let dir_name = std::path::Path::new(&work_dir)
             .file_name()
@@ -277,7 +311,7 @@ async fn create_session(
     let id = match req.session_type {
         crate::session_manager::SessionType::Tmux => {
             state.sessions
-                .create_pty_session(name.clone(), &state.shell, &work_dir, state.default_cols, state.default_rows, &owner_id)
+                .create_pty_session(name.clone(), &state.shell, &work_dir, state.default_cols, state.default_rows, &owner_id, req.tmux_target.as_deref())
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
         }
         crate::session_manager::SessionType::Claude => {

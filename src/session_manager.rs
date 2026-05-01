@@ -209,13 +209,19 @@ impl SessionManager {
         cols: u16,
         rows: u16,
         owner_id: &str,
+        tmux_target: Option<&str>,
     ) -> Result<String, String> {
         let cwd = if work_dir.is_empty() || work_dir == "." {
             None
         } else {
             Some(work_dir)
         };
-        let (pty, mut output_rx) = PtyHandle::spawn(shell, &[], &[], cols, rows, cwd)
+        let (cmd, args): (&str, Vec<&str>) = if let Some(target) = tmux_target {
+            ("tmux", vec!["attach", "-t", target])
+        } else {
+            (shell, vec![])
+        };
+        let (pty, mut output_rx) = PtyHandle::spawn(cmd, &args, &[], cols, rows, cwd)
             .map_err(|e| format!("Failed to spawn PTY: {}", e))?;
 
         let effective_dir = if work_dir.is_empty() || work_dir == "." {

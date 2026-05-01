@@ -1,8 +1,8 @@
 import { useState, useCallback } from 'react'
-import type { SessionInfo, SessionType, DirEntry, UserInfo } from '../lib/api'
-import { listDirectories } from '../lib/api'
+import type { SessionInfo, SessionType, DirEntry, UserInfo, TmuxSession } from '../lib/api'
+import { listDirectories, listTmuxSessions } from '../lib/api'
 import type { Theme } from '../lib/theme'
-import { Terminal, Bot, Plus, X, PanelLeftClose, PanelLeft, Sun, Moon, Sparkles, Folder, FolderGit2, ChevronLeft, Home, LogOut, Users } from 'lucide-react'
+import { Terminal, Bot, Plus, X, PanelLeftClose, PanelLeft, Sun, Moon, Sparkles, Folder, FolderGit2, ChevronLeft, Home, LogOut, Users, MonitorUp, Link } from 'lucide-react'
 import AdminPanel from './AdminPanel'
 import { StatusDot } from './SessionInfoBar'
 
@@ -10,7 +10,7 @@ interface Props {
   sessions: SessionInfo[]
   activeId: string | null
   onSelect: (id: string) => void
-  onCreate: (type: SessionType, workDir?: string) => void
+  onCreate: (type: SessionType, workDir?: string, tmuxTarget?: string) => void
   onDelete: (id: string) => void
   onLogout: () => void
   theme: Theme
@@ -21,7 +21,7 @@ interface Props {
   mobile: boolean
 }
 
-type NewSessionStep = 'closed' | 'pick-type' | 'pick-dir'
+type NewSessionStep = 'closed' | 'pick-type' | 'pick-terminal-mode' | 'pick-dir' | 'pick-tmux'
 
 export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDelete, onLogout, theme, onToggleTheme, user, open, onToggle, mobile }: Props) {
   const [step, setStep] = useState<NewSessionStep>('closed')
@@ -35,6 +35,10 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
   const [homePath, setHomePath] = useState('')
   const [dirs, setDirs] = useState<DirEntry[]>([])
   const [loading, setLoading] = useState(false)
+
+  // Tmux session list state
+  const [tmuxSessions, setTmuxSessions] = useState<TmuxSession[]>([])
+  const [tmuxLoading, setTmuxLoading] = useState(false)
 
   const ThemeIcon = theme === 'dark' ? Sun : Moon
 
@@ -50,6 +54,15 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
     setLoading(false)
   }, [])
 
+  const loadTmuxSessions = useCallback(async () => {
+    setTmuxLoading(true)
+    try {
+      const sessions = await listTmuxSessions()
+      setTmuxSessions(sessions)
+    } catch { setTmuxSessions([]) }
+    setTmuxLoading(false)
+  }, [])
+
   const openTypePicker = () => {
     setStep('pick-type')
     setPendingType(null)
@@ -57,8 +70,27 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
 
   const selectType = (type: SessionType) => {
     setPendingType(type)
+    if (type === 'tmux') {
+      setStep('pick-terminal-mode')
+    } else {
+      setStep('pick-dir')
+      loadDirs()
+    }
+  }
+
+  const selectNewShell = () => {
     setStep('pick-dir')
     loadDirs()
+  }
+
+  const selectAttachTmux = () => {
+    setStep('pick-tmux')
+    loadTmuxSessions()
+  }
+
+  const attachTmuxSession = (name: string) => {
+    onCreate('tmux', undefined, name)
+    setStep('closed')
   }
 
   const selectDir = (path: string) => {
@@ -266,6 +298,79 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
                       <div className="text-[10px] text-[var(--text-secondary)]">AI coding agent (ACP)</div>
                     </div>
                   </button>
+                </>
+              )}
+
+              {step === 'pick-terminal-mode' && (
+                <>
+                  <div className="flex items-center gap-1 px-2 py-1.5 border-b border-[var(--border)]">
+                    <button
+                      onClick={() => setStep('pick-type')}
+                      className="p-0.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)] rounded transition-colors"
+                      title="Back"
+                    >
+                      <ChevronLeft size={14} />
+                    </button>
+                    <span className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">Terminal mode</span>
+                  </div>
+                  <button
+                    onClick={selectNewShell}
+                    className="flex items-center gap-2.5 w-full px-3 py-2 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+                  >
+                    <MonitorUp size={14} className="text-[var(--accent-green-text)] shrink-0" />
+                    <div className="text-left">
+                      <div className="font-medium">New Shell</div>
+                      <div className="text-[10px] text-[var(--text-secondary)]">Start a fresh terminal</div>
+                    </div>
+                  </button>
+                  <button
+                    onClick={selectAttachTmux}
+                    className="flex items-center gap-2.5 w-full px-3 py-2 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+                  >
+                    <Link size={14} className="text-[var(--accent-blue)] shrink-0" />
+                    <div className="text-left">
+                      <div className="font-medium">Attach tmux</div>
+                      <div className="text-[10px] text-[var(--text-secondary)]">Connect to existing session</div>
+                    </div>
+                  </button>
+                </>
+              )}
+
+              {step === 'pick-tmux' && (
+                <>
+                  <div className="flex items-center gap-1 px-2 py-1.5 border-b border-[var(--border)]">
+                    <button
+                      onClick={() => setStep('pick-terminal-mode')}
+                      className="p-0.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)] rounded transition-colors"
+                      title="Back"
+                    >
+                      <ChevronLeft size={14} />
+                    </button>
+                    <span className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">tmux sessions</span>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto">
+                    {tmuxLoading ? (
+                      <div className="px-3 py-2 text-[10px] text-[var(--text-muted)]">Loading...</div>
+                    ) : tmuxSessions.length === 0 ? (
+                      <div className="px-3 py-2 text-[10px] text-[var(--text-muted)]">No tmux sessions running</div>
+                    ) : (
+                      tmuxSessions.map(s => (
+                        <button
+                          key={s.name}
+                          onClick={() => attachTmuxSession(s.name)}
+                          className="flex items-center gap-2.5 w-full px-3 py-2 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+                        >
+                          <Terminal size={13} className="text-[var(--accent-green-text)] shrink-0" />
+                          <div className="flex-1 min-w-0 text-left">
+                            <div className="font-medium truncate">{s.name}</div>
+                            <div className="text-[10px] text-[var(--text-secondary)]">
+                              {s.windows} window{s.windows !== 1 ? 's' : ''}{s.attached > 0 ? ' · attached' : ''}
+                            </div>
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
                 </>
               )}
 

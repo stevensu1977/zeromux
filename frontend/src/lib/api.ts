@@ -107,13 +107,27 @@ export async function listSessions(): Promise<SessionInfo[]> {
   return data.sessions || []
 }
 
-export async function createSession(type: SessionType, name?: string, workDir?: string): Promise<SessionInfo> {
+export async function createSession(type: SessionType, name?: string, workDir?: string, tmuxTarget?: string): Promise<SessionInfo> {
   const res = await api('/api/sessions', {
     method: 'POST',
-    body: JSON.stringify({ type, name: name || null, work_dir: workDir || null }),
+    body: JSON.stringify({ type, name: name || null, work_dir: workDir || null, tmux_target: tmuxTarget || null }),
   })
   if (!res.ok) throw new Error(await res.text())
   return res.json()
+}
+
+export interface TmuxSession {
+  name: string
+  windows: number
+  attached: number
+  created: number
+}
+
+export async function listTmuxSessions(): Promise<TmuxSession[]> {
+  const res = await api('/api/tmux/sessions')
+  if (!res.ok) throw new Error('Failed to list tmux sessions')
+  const data = await res.json()
+  return data.sessions || []
 }
 
 export interface DirEntry {
