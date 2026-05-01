@@ -39,6 +39,7 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
   // Tmux session list state
   const [tmuxSessions, setTmuxSessions] = useState<TmuxSession[]>([])
   const [tmuxLoading, setTmuxLoading] = useState(false)
+  const [tmuxWorkDir, setTmuxWorkDir] = useState(() => localStorage.getItem('zeromux_tmux_workdir') || '')
 
   const ThemeIcon = theme === 'dark' ? Sun : Moon
 
@@ -89,7 +90,11 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
   }
 
   const attachTmuxSession = (name: string) => {
-    onCreate('tmux', undefined, name)
+    const workDir = tmuxWorkDir.trim() || undefined
+    if (workDir) {
+      localStorage.setItem('zeromux_tmux_workdir', workDir)
+    }
+    onCreate('tmux', workDir, name)
     setStep('closed')
   }
 
@@ -347,6 +352,16 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
                       <ChevronLeft size={14} />
                     </button>
                     <span className="text-[10px] font-semibold text-[var(--text-muted)] uppercase tracking-wider">tmux sessions</span>
+                  </div>
+                  <div className="px-3 py-1.5 border-b border-[var(--border)]">
+                    <div className="text-[10px] text-[var(--text-muted)] mb-1">Work directory</div>
+                    <input
+                      type="text"
+                      value={tmuxWorkDir}
+                      onChange={e => setTmuxWorkDir(e.target.value)}
+                      placeholder="/home/ubuntu"
+                      className="w-full px-2 py-1 text-[11px] bg-[var(--bg-primary)] border border-[var(--border)] rounded text-[var(--text-primary)] outline-none focus:border-[var(--accent-blue)] placeholder-[var(--text-muted)]"
+                    />
                   </div>
                   <div className="max-h-48 overflow-y-auto">
                     {tmuxLoading ? (
