@@ -530,6 +530,7 @@ async fn delete_note(
 #[derive(serde::Deserialize)]
 struct FilesQuery {
     pattern: Option<String>,
+    base_dir: Option<String>,
 }
 
 async fn list_session_files(
@@ -537,11 +538,7 @@ async fn list_session_files(
     axum::extract::Path(id): axum::extract::Path<String>,
     Query(query): Query<FilesQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let work_dir = state.sessions.work_dir(&id)
-        .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
-
-    let base = std::path::Path::new(&work_dir).canonicalize()
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid work_dir: {}", e)))?;
+    let base = resolve_base_dir(&state, &id, query.base_dir.as_deref())?;
 
     let pattern = query.pattern.as_deref().unwrap_or("*.md");
     let mut files = Vec::new();
@@ -610,6 +607,7 @@ fn collect_files(
 #[derive(serde::Deserialize)]
 struct FileQuery {
     path: String,
+    base_dir: Option<String>,
 }
 
 async fn get_session_file(
@@ -617,13 +615,9 @@ async fn get_session_file(
     axum::extract::Path(id): axum::extract::Path<String>,
     Query(query): Query<FileQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let work_dir = state.sessions.work_dir(&id)
-        .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
+    let base = resolve_base_dir(&state, &id, query.base_dir.as_deref())?;
 
-    let base = std::path::Path::new(&work_dir).canonicalize()
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid work_dir: {}", e)))?;
-
-    // Security: resolve and check path is under work_dir
+    // Security: resolve and check path is under base
     let file_path = base.join(&query.path).canonicalize()
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid path: {}", e)))?;
 
@@ -647,6 +641,34 @@ async fn get_session_file(
     })))
 }
 
+/// Resolve the effective base directory: use base_dir_override if provided, otherwise session work_dir.
+/// Security: the resolved path must be under HOME.
+fn resolve_base_dir(
+    state: &AppState,
+    session_id: &str,
+    base_dir_override: Option<&str>,
+) -> Result<std::path::PathBuf, (StatusCode, String)> {
+    let dir = if let Some(bd) = base_dir_override.filter(|s| !s.is_empty()) {
+        bd.to_string()
+    } else {
+        state.sessions.work_dir(session_id)
+            .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?
+    };
+
+    let base = std::path::Path::new(&dir).canonicalize()
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid path: {}", e)))?;
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/ubuntu".to_string());
+    let home_path = std::path::Path::new(&home).canonicalize()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Home dir error: {}", e)))?;
+
+    if !base.starts_with(&home_path) {
+        return Err((StatusCode::FORBIDDEN, "Path must be under home directory".to_string()));
+    }
+
+    Ok(base)
+}
+
 /// Helper: resolve a session work_dir and validate a relative path is under it.
 /// Returns (base_canonical, resolved_path). The resolved path may not exist yet (for creates).
 fn resolve_session_path(
@@ -654,11 +676,7 @@ fn resolve_session_path(
     session_id: &str,
     rel_path: &str,
 ) -> Result<(std::path::PathBuf, std::path::PathBuf), (StatusCode, String)> {
-    let work_dir = state.sessions.work_dir(session_id)
-        .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
-
-    let base = std::path::Path::new(&work_dir).canonicalize()
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid work_dir: {}", e)))?;
+    let base = resolve_base_dir(state, session_id, None)?;
 
     // For new files, parent must exist and be under base
     let joined = base.join(rel_path);

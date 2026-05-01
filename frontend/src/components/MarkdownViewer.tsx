@@ -9,11 +9,13 @@ import {
 import type { FileEntry } from '../lib/api'
 import {
   FileText, RefreshCw, ChevronRight, Folder, Plus, Trash2, Pencil,
-  Upload, FolderPlus, Save, X, Check, MoreHorizontal, Eye, Edit3
+  Upload, FolderPlus, Save, X, Check, MoreHorizontal, Eye, Edit3, Settings
 } from 'lucide-react'
+import type { SessionType } from '../lib/api'
 
 interface Props {
   sessionId: string
+  sessionType?: SessionType
 }
 
 type ContextMenu = {
@@ -23,7 +25,9 @@ type ContextMenu = {
   path: string
 } | null
 
-export default function MarkdownViewer({ sessionId }: Props) {
+const DOCS_BASEDIR_KEY = 'zeromux_docs_basedir'
+
+export default function MarkdownViewer({ sessionId, sessionType }: Props) {
   const [files, setFiles] = useState<FileEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
@@ -51,24 +55,44 @@ export default function MarkdownViewer({ sessionId }: Props) {
   // Upload
   const uploadRef = useRef<HTMLInputElement>(null)
 
+  // Docs base directory (tmux sessions only)
+  const [docsBaseDir, setDocsBaseDir] = useState(() => localStorage.getItem(DOCS_BASEDIR_KEY) || '')
+  const [showBaseConfig, setShowBaseConfig] = useState(false)
+  const [baseDirInput, setBaseDirInput] = useState(docsBaseDir)
+  const isTmux = sessionType === 'tmux'
+  const effectiveBaseDir = isTmux && docsBaseDir ? docsBaseDir : undefined
+
+  const applyBaseDir = () => {
+    const val = baseDirInput.trim()
+    setDocsBaseDir(val)
+    if (val) {
+      localStorage.setItem(DOCS_BASEDIR_KEY, val)
+    } else {
+      localStorage.removeItem(DOCS_BASEDIR_KEY)
+    }
+    setShowBaseConfig(false)
+    setSelectedPath(null)
+    setContent('')
+  }
+
   const loadFiles = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await listSessionFiles(sessionId, '*.md')
+      const data = await listSessionFiles(sessionId, '*.md', effectiveBaseDir)
       setFiles(data)
       if (data.length > 0 && !selectedPath) {
         selectFile(data[0].path)
       }
     } catch { /* ignore */ }
     setLoading(false)
-  }, [sessionId])
+  }, [sessionId, effectiveBaseDir])
 
   const selectFile = async (path: string) => {
     setSelectedPath(path)
     setEditing(false)
     setLoadingContent(true)
     try {
-      const text = await getSessionFile(sessionId, path)
+      const text = await getSessionFile(sessionId, path, effectiveBaseDir)
       setContent(text)
     } catch (e: any) {
       setContent(`*Error loading file: ${e.message}*`)
@@ -237,6 +261,19 @@ export default function MarkdownViewer({ sessionId }: Props) {
             Files
           </span>
           <div className="flex items-center gap-0.5">
+            {isTmux && (
+              <button
+                onClick={() => { setShowBaseConfig(!showBaseConfig); setBaseDirInput(docsBaseDir) }}
+                className={`p-1 rounded transition-colors ${
+                  docsBaseDir
+                    ? 'text-[var(--accent-blue)]'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                }`}
+                title={docsBaseDir ? `Docs: ${docsBaseDir}` : 'Set docs base directory'}
+              >
+                <Settings size={12} />
+              </button>
+            )}
             <button
               onClick={() => { setCreating('file'); setCreatePath('') }}
               className="p-1 text-[var(--text-secondary)] hover:text-[var(--accent-green-text)] rounded transition-colors"
@@ -268,6 +305,32 @@ export default function MarkdownViewer({ sessionId }: Props) {
             </button>
           </div>
         </div>
+
+        {/* Docs base directory config */}
+        {showBaseConfig && (
+          <div className="px-2 py-1.5 border-b border-[var(--border)] bg-[var(--bg-tertiary)]">
+            <div className="text-[10px] text-[var(--text-muted)] mb-1">Docs base directory</div>
+            <div className="flex items-center gap-1">
+              <input
+                value={baseDirInput}
+                onChange={e => setBaseDirInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') applyBaseDir()
+                  if (e.key === 'Escape') setShowBaseConfig(false)
+                }}
+                placeholder="Leave empty for session default"
+                autoFocus
+                className="flex-1 text-[11px] bg-[var(--bg-primary)] border border-[var(--border)] rounded px-1.5 py-0.5 text-[var(--text-primary)] outline-none focus:border-[var(--accent-blue)] placeholder-[var(--text-muted)]"
+              />
+              <button onClick={applyBaseDir} className="p-0.5 text-[var(--accent-green-text)] hover:text-green-400" title="Apply">
+                <Check size={12} />
+              </button>
+              <button onClick={() => setShowBaseConfig(false)} className="p-0.5 text-[var(--text-secondary)] hover:text-[var(--accent-red)]" title="Cancel">
+                <X size={12} />
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Create new file/dir inline */}
         {creating && (

@@ -181,7 +181,7 @@ export default function App() {
                     <AcpChatView sessionId={s.id} active={isActive && view === 'none'} agentType={s.type} />
                   )}
                 </div>
-                {view === 'files' && <MarkdownViewer sessionId={s.id} />}
+                {view === 'files' && <MarkdownViewer sessionId={s.id} sessionType={s.type} />}
                 {view === 'git' && <GitViewer sessionId={s.id} />}
               </div>
             )

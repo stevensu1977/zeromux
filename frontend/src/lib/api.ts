@@ -238,16 +238,21 @@ export interface FileEntry {
   modified: number
 }
 
-export async function listSessionFiles(id: string, pattern?: string): Promise<FileEntry[]> {
-  const params = pattern ? `?pattern=${encodeURIComponent(pattern)}` : ''
-  const res = await api(`/api/sessions/${id}/files${params}`)
+export async function listSessionFiles(id: string, pattern?: string, baseDir?: string): Promise<FileEntry[]> {
+  const params = new URLSearchParams()
+  if (pattern) params.set('pattern', pattern)
+  if (baseDir) params.set('base_dir', baseDir)
+  const qs = params.toString()
+  const res = await api(`/api/sessions/${id}/files${qs ? `?${qs}` : ''}`)
   if (!res.ok) throw new Error('Failed to list files')
   const data = await res.json()
   return data.files || []
 }
 
-export async function getSessionFile(id: string, path: string): Promise<string> {
-  const res = await api(`/api/sessions/${id}/file?path=${encodeURIComponent(path)}`)
+export async function getSessionFile(id: string, path: string, baseDir?: string): Promise<string> {
+  const params = new URLSearchParams({ path })
+  if (baseDir) params.set('base_dir', baseDir)
+  const res = await api(`/api/sessions/${id}/file?${params}`)
   if (!res.ok) throw new Error('Failed to read file')
   const data = await res.json()
   return data.content
