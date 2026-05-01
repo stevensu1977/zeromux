@@ -53,8 +53,8 @@ export default function App() {
     }
   }, [])
 
-  const handleLegacyLogin = useCallback(async (password: string) => {
-    const userInfo = await legacyLogin(password)
+  const handleLegacyLogin = useCallback(async (password: string, remember?: boolean) => {
+    const userInfo = await legacyLogin(password, remember)
     setUser(userInfo)
     setAuthState('active')
     const list = await listSessions()

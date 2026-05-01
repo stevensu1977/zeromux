@@ -10,6 +10,7 @@ use crate::AppState;
 #[derive(serde::Deserialize)]
 pub struct CallbackQuery {
     pub code: String,
+    pub state: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -22,8 +23,16 @@ pub struct JwtClaims {
     pub exp: usize,
 }
 
+#[derive(serde::Deserialize)]
+pub struct RedirectQuery {
+    pub remember: Option<bool>,
+}
+
 /// GET /auth/github — redirect to GitHub authorize URL
-pub async fn github_redirect(State(state): State<Arc<AppState>>) -> Response {
+pub async fn github_redirect(
+    Query(query): Query<RedirectQuery>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
     let client_id = match &state.github_client_id {
         Some(id) => id,
         None => {
@@ -32,11 +41,13 @@ pub async fn github_redirect(State(state): State<Arc<AppState>>) -> Response {
         }
     };
 
+    let remember_flag = if query.remember.unwrap_or(false) { "1" } else { "0" };
     let callback_url = format!("{}/auth/github/callback", state.external_url);
     let url = format!(
-        "https://github.com/login/oauth/authorize?client_id={}&redirect_uri={}&scope=read:user",
+        "https://github.com/login/oauth/authorize?client_id={}&redirect_uri={}&scope=read:user&state={}",
         client_id,
         urlencoding::encode(&callback_url),
+        remember_flag,
     );
     Redirect::temporary(&url).into_response()
 }
@@ -106,7 +117,8 @@ pub async fn github_callback(
     );
 
     // Issue JWT
-    let jwt = match issue_jwt(&user, &state.jwt_secret) {
+    let remember = query.state.as_deref() == Some("1");
+    let jwt = match issue_jwt(&user, &state.jwt_secret, remember) {
         Ok(t) => t,
         Err(e) => {
             tracing::error!("JWT signing failed: {}", e);
@@ -116,9 +128,10 @@ pub async fn github_callback(
     };
 
     // Redirect to frontend with JWT in cookie
+    let max_age = if remember { 2592000 } else { 604800 }; // 30 days vs 7 days
     let cookie = format!(
-        "zeromux_jwt={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800",
-        jwt
+        "zeromux_jwt={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",
+        jwt, max_age
     );
 
     Response::builder()
@@ -129,12 +142,13 @@ pub async fn github_callback(
         .unwrap()
 }
 
-pub fn issue_jwt(user: &crate::db::User, secret: &str) -> Result<String, String> {
+pub fn issue_jwt(user: &crate::db::User, secret: &str, remember: bool) -> Result<String, String> {
+    let ttl = if remember { 30 * 24 * 3600 } else { 7 * 24 * 3600 };
     let exp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as usize
-        + 7 * 24 * 3600; // 7 days
+        + ttl;
 
     let claims = JwtClaims {
         sub: user.id.clone(),

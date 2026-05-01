@@ -53,9 +53,10 @@ function getToken(): string {
   return localStorage.getItem('zeromux_token') || ''
 }
 
-export function setToken(token: string) {
+export function setToken(token: string, maxAge?: number) {
   localStorage.setItem('zeromux_token', token)
-  document.cookie = `zeromux_token=${encodeURIComponent(token)};path=/;SameSite=Strict`
+  const age = maxAge || 604800
+  document.cookie = `zeromux_token=${encodeURIComponent(token)};path=/;SameSite=Strict;max-age=${age}`
 }
 
 export function clearAuth() {
@@ -88,15 +89,15 @@ export async function getMe(): Promise<UserInfo> {
   return res.json()
 }
 
-export async function legacyLogin(password: string): Promise<UserInfo> {
+export async function legacyLogin(password: string, remember?: boolean): Promise<UserInfo> {
   const res = await fetch('/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ password, remember: remember || false }),
   })
   if (!res.ok) throw new Error('Invalid token')
   const data = await res.json()
-  setToken(data.token)
+  setToken(data.token, data.max_age)
   return data.user
 }
 

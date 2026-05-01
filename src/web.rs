@@ -109,6 +109,7 @@ async fn legacy_login(
     let password = body["password"]
         .as_str()
         .ok_or(StatusCode::BAD_REQUEST)?;
+    let remember = body["remember"].as_bool().unwrap_or(false);
 
     let hash = state.password_hash.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
@@ -116,8 +117,10 @@ async fn legacy_login(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
+    let max_age = if remember { 2592000 } else { 604800 };
     Ok(Json(serde_json::json!({
         "token": password,
+        "max_age": max_age,
         "user": {
             "login": "admin",
             "role": "admin",
