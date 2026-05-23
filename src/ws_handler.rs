@@ -39,6 +39,7 @@ pub async fn ws_terminal(
         .is_some();
 
     if !authed {
+        tracing::warn!("WebSocket auth failed for session {}", session_id);
         return Response::builder()
             .status(401)
             .body(axum::body::Body::from("Unauthorized"))

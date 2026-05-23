@@ -249,13 +249,18 @@ export async function listSessionFiles(id: string, pattern?: string, baseDir?: s
   return data.files || []
 }
 
-export async function getSessionFile(id: string, path: string, baseDir?: string): Promise<string> {
+export interface FileContent {
+  content: string
+  binary: boolean
+}
+
+export async function getSessionFile(id: string, path: string, baseDir?: string): Promise<FileContent> {
   const params = new URLSearchParams({ path })
   if (baseDir) params.set('base_dir', baseDir)
   const res = await api(`/api/sessions/${id}/file?${params}`)
   if (!res.ok) throw new Error('Failed to read file')
   const data = await res.json()
-  return data.content
+  return { content: data.content, binary: data.binary ?? false }
 }
 
 // Git
@@ -316,10 +321,10 @@ export async function renameSessionFile(id: string, from: string, to: string): P
   if (!res.ok) throw new Error(await res.text())
 }
 
-export async function uploadSessionFile(id: string, path: string, data: string): Promise<void> {
+export async function uploadSessionFile(id: string, path: string, data: string, baseDir?: string): Promise<void> {
   const res = await api(`/api/sessions/${id}/upload`, {
     method: 'POST',
-    body: JSON.stringify({ path, data }),
+    body: JSON.stringify({ path, data, base_dir: baseDir }),
   })
   if (!res.ok) throw new Error(await res.text())
 }

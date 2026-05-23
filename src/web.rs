@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State},
+    extract::{DefaultBodyLimit, Query, State},
     http::StatusCode,
     middleware,
     response::{IntoResponse, Response},
@@ -89,6 +89,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(ws)
         .route("/assets/{*path}", get(serve_asset))
         .fallback(get(spa_fallback))
+        .layer(DefaultBodyLimit::max(20 * 1024 * 1024))
         .with_state(state)
 }
 
@@ -577,7 +578,17 @@ fn collect_files(
         if path.is_dir() {
             collect_files(&path, base, pattern, out, max_depth - 1);
         } else if path.is_file() {
-            let matches = if let Some(ext) = ext_filter {
+            let matches = if pattern == "*" {
+                true
+            } else if pattern.contains(',') {
+                let exts: Vec<&str> = pattern.split(',')
+                    .filter_map(|p| p.trim().strip_prefix("*."))
+                    .collect();
+                path.extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| exts.iter().any(|ext| e.eq_ignore_ascii_case(ext)))
+                    .unwrap_or(false)
+            } else if let Some(ext) = ext_filter {
                 path.extension().map(|e| e == ext).unwrap_or(false)
             } else {
                 name == pattern
@@ -625,20 +636,63 @@ async fn get_session_file(
         return Err((StatusCode::FORBIDDEN, "Path traversal denied".to_string()));
     }
 
-    // Size check (1MB max)
     let meta = std::fs::metadata(&file_path)
         .map_err(|e| (StatusCode::NOT_FOUND, format!("File not found: {}", e)))?;
-    if meta.len() > 1_048_576 {
-        return Err((StatusCode::BAD_REQUEST, "File too large (max 1MB)".to_string()));
+
+    let is_image = file_path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| matches!(e.to_ascii_lowercase().as_str(),
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico"))
+        .unwrap_or(false);
+
+    if is_image {
+        // 5MB limit for images
+        if meta.len() > 5_242_880 {
+            return Err((StatusCode::BAD_REQUEST, "Image too large (max 5MB)".to_string()));
+        }
+        let bytes = std::fs::read(&file_path)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("Cannot read file: {}", e)))?;
+        let mime = match file_path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "svg" => "image/svg+xml",
+            "bmp" => "image/bmp",
+            "ico" => "image/x-icon",
+            _ => "application/octet-stream",
+        };
+        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+        let data_url = format!("data:{};base64,{}", mime, b64);
+        Ok(Json(serde_json::json!({
+            "path": query.path,
+            "content": data_url,
+            "binary": true,
+        })))
+    } else {
+        // 1MB limit for text files
+        if meta.len() > 1_048_576 {
+            return Err((StatusCode::BAD_REQUEST, "File too large (max 1MB)".to_string()));
+        }
+        match std::fs::read_to_string(&file_path) {
+            Ok(content) => Ok(Json(serde_json::json!({
+                "path": query.path,
+                "content": content,
+                "binary": false,
+            }))),
+            Err(_) => {
+                // Binary file that's not an image
+                let bytes = std::fs::read(&file_path)
+                    .map_err(|e| (StatusCode::BAD_REQUEST, format!("Cannot read file: {}", e)))?;
+                let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                Ok(Json(serde_json::json!({
+                    "path": query.path,
+                    "content": b64,
+                    "binary": true,
+                })))
+            }
+        }
     }
-
-    let content = std::fs::read_to_string(&file_path)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Cannot read file: {}", e)))?;
-
-    Ok(Json(serde_json::json!({
-        "path": query.path,
-        "content": content,
-    })))
 }
 
 /// Resolve the effective base directory: use base_dir_override if provided, otherwise session work_dir.
@@ -677,18 +731,24 @@ fn resolve_session_path(
     rel_path: &str,
 ) -> Result<(std::path::PathBuf, std::path::PathBuf), (StatusCode, String)> {
     let base = resolve_base_dir(state, session_id, None)?;
+    resolve_path_with_base(&base, rel_path)
+}
 
-    // For new files, parent must exist and be under base
+/// Validate a relative path against a given base directory.
+fn resolve_path_with_base(
+    base: &std::path::Path,
+    rel_path: &str,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), (StatusCode, String)> {
     let joined = base.join(rel_path);
 
     // Check for path traversal by normalizing components
-    let mut normalized = base.clone();
+    let mut normalized = base.to_path_buf();
     for component in std::path::Path::new(rel_path).components() {
         match component {
             std::path::Component::Normal(c) => normalized.push(c),
             std::path::Component::ParentDir => {
                 normalized.pop();
-                if !normalized.starts_with(&base) {
+                if !normalized.starts_with(base) {
                     return Err((StatusCode::FORBIDDEN, "Path traversal denied".to_string()));
                 }
             }
@@ -697,11 +757,11 @@ fn resolve_session_path(
         }
     }
 
-    if !normalized.starts_with(&base) {
+    if !normalized.starts_with(base) {
         return Err((StatusCode::FORBIDDEN, "Path traversal denied".to_string()));
     }
 
-    Ok((base, joined))
+    Ok((base.to_path_buf(), joined))
 }
 
 // ── File write (create/edit) ──
@@ -803,6 +863,7 @@ struct UploadReq {
     path: String,
     /// Base64-encoded file content
     data: String,
+    base_dir: Option<String>,
 }
 
 async fn upload_session_file(
@@ -810,7 +871,8 @@ async fn upload_session_file(
     axum::extract::Path(id): axum::extract::Path<String>,
     Json(req): Json<UploadReq>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let (_base, file_path) = resolve_session_path(&state, &id, &req.path)?;
+    let base = resolve_base_dir(&state, &id, req.base_dir.as_deref())?;
+    let (_base, file_path) = resolve_path_with_base(&base, &req.path)?;
 
     let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &req.data)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid base64: {}", e)))?;

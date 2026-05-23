@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { SessionInfo, SessionMetaStatus, NoteEntry } from '../lib/api'
 import { updateSession, listNotes, createNote, deleteNote } from '../lib/api'
-import { ChevronDown, ChevronRight, FileText, StickyNote, GitBranch, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileText, StickyNote, GitBranch, X, ClipboardPaste } from 'lucide-react'
+import ClipboardUpload from './ClipboardUpload'
 
 interface Props {
   session: SessionInfo
@@ -31,6 +32,7 @@ export default function SessionInfoBar({ session, onUpdate, onToggleFiles, onTog
   const [notes, setNotes] = useState<NoteEntry[]>([])
   const [noteInput, setNoteInput] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [showClipboard, setShowClipboard] = useState(false)
 
   const save = useCallback(async (data: { description?: string; status?: SessionMetaStatus }) => {
     try {
@@ -126,7 +128,7 @@ export default function SessionInfoBar({ session, onUpdate, onToggleFiles, onTog
           />
         )}
 
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center gap-1 shrink-0 relative">
           <button
             onClick={onToggleFiles}
             className={`p-1 rounded transition-colors ${
@@ -149,6 +151,29 @@ export default function SessionInfoBar({ session, onUpdate, onToggleFiles, onTog
           >
             <GitBranch size={14} />
           </button>
+          {(session.type === 'tmux') && (
+            <button
+              onClick={() => setShowClipboard(!showClipboard)}
+              className={`p-1 rounded transition-colors ${
+                showClipboard
+                  ? 'text-[var(--accent-blue)] bg-[var(--bg-primary)]'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+              title="Paste image from clipboard"
+            >
+              <ClipboardPaste size={14} />
+            </button>
+          )}
+          {showClipboard && (
+            <ClipboardUpload
+              sessionId={session.id}
+              onClose={() => setShowClipboard(false)}
+              onUploaded={(filename) => {
+                // Could show a toast or notification here
+                console.log(`Uploaded: ${filename}`)
+              }}
+            />
+          )}
         </div>
       </div>
 
