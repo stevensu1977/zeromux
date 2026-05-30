@@ -83,8 +83,8 @@ export default function App() {
     setActiveId(null)
   }, [])
 
-  const handleDelete = useCallback(async (id: string) => {
-    await deleteSession(id)
+  const handleDelete = useCallback(async (id: string, kill = false) => {
+    await deleteSession(id, kill)
     setSessions(prev => {
       const next = prev.filter(s => s.id !== id)
       if (activeId === id) {

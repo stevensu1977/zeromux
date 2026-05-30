@@ -31,7 +31,7 @@ const AGENT_COLORS: Record<string, string> = {
   'kiro': 'bg-blue-500/20 text-blue-300',
 }
 
-export default function AgentDashboard({ sessionId }: Props) {
+export default function AgentDashboard({ sessionId: _sessionId }: Props) {
   const [events, setEvents] = useState<AgentEvent[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<{ agent?: string; event?: string }>({})
@@ -40,7 +40,6 @@ export default function AgentDashboard({ sessionId }: Props) {
     setLoading(true)
     try {
       const data = await listEvents({
-        session_id: sessionId,
         agent: filter.agent,
         event: filter.event,
         limit: 100,
@@ -48,7 +47,7 @@ export default function AgentDashboard({ sessionId }: Props) {
       setEvents(data.events)
     } catch { /* ignore */ }
     setLoading(false)
-  }, [sessionId, filter])
+  }, [filter])
 
   useEffect(() => { loadEvents() }, [loadEvents])
 

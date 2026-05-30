@@ -87,6 +87,8 @@ pub struct Session {
     worktree_path: Option<PathBuf>,
     /// PTY child PID kept for /proc lookup (PTY sessions only)
     pty_pid: Option<u32>,
+    /// Underlying tmux session name (if backed by tmux)
+    tmux_session_name: Option<String>,
     /// Output history for replay on reconnect (base64 for PTY, JSON for ACP/Kiro)
     scrollback: VecDeque<String>,
     scrollback_bytes: usize,
@@ -194,8 +196,22 @@ fn resolve_work_dir(work_dir: &str, session_id: &str) -> (PathBuf, Option<PathBu
     }
 }
 
+/// Check if tmux binary is available
+fn has_tmux_binary() -> bool {
+    std::process::Command::new("tmux")
+        .arg("-V")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 impl SessionManager {
     pub fn new() -> Self {
+        if !has_tmux_binary() {
+            eprintln!("WARNING: tmux not found. Sessions will not survive ZeroMux restart. Install: apt install tmux");
+        }
         Self {
             sessions: Mutex::new(HashMap::new()),
         }
@@ -216,12 +232,51 @@ impl SessionManager {
         } else {
             Some(work_dir)
         };
-        let (cmd, args): (&str, Vec<&str>) = if let Some(target) = tmux_target {
-            ("tmux", vec!["attach", "-t", target])
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let has_tmux = has_tmux_binary();
+
+        // Determine command and tmux session name
+        let tmux_session_name: Option<String>;
+        let cmd: String;
+        let args_owned: Vec<String>;
+
+        if let Some(target) = tmux_target {
+            cmd = "tmux".to_string();
+            args_owned = vec!["attach".to_string(), "-t".to_string(), target.to_string()];
+            tmux_session_name = Some(target.to_string());
+        } else if has_tmux {
+            let tmux_name = format!("zmux-{}", &id[..8]);
+            let mut create_cmd = std::process::Command::new("tmux");
+            create_cmd.args(["new-session", "-d", "-s", &tmux_name, "-x", &cols.to_string(), "-y", &rows.to_string()]);
+            if let Some(dir) = cwd {
+                create_cmd.args(["-c", dir]);
+            }
+            create_cmd.arg(shell);
+            let output = create_cmd.output()
+                .map_err(|e| format!("Failed to create tmux session: {}", e))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("tmux new-session failed: {}", stderr));
+            }
+            // Prevent tmux from destroying the session when last client detaches
+            let _ = std::process::Command::new("tmux")
+                .args(["set-option", "-t", &tmux_name, "destroy-unattached", "off"])
+                .output();
+            let _ = std::process::Command::new("tmux")
+                .args(["set-option", "-t", &tmux_name, "exit-empty", "off"])
+                .output();
+            cmd = "tmux".to_string();
+            args_owned = vec!["attach".to_string(), "-t".to_string(), tmux_name.clone()];
+            tmux_session_name = Some(tmux_name);
         } else {
-            (shell, vec![])
+            cmd = shell.to_string();
+            args_owned = vec![];
+            tmux_session_name = None;
         };
-        let (pty, mut output_rx) = PtyHandle::spawn(cmd, &args, &[], cols, rows, cwd)
+
+        let args_refs: Vec<&str> = args_owned.iter().map(|s| s.as_str()).collect();
+        let (pty, mut output_rx) = PtyHandle::spawn(&cmd, &args_refs, &[], cols, rows, cwd)
             .map_err(|e| format!("Failed to spawn PTY: {}", e))?;
 
         let effective_dir = if work_dir.is_empty() || work_dir == "." {
@@ -230,13 +285,13 @@ impl SessionManager {
             work_dir.to_string()
         };
 
-        let id = uuid::Uuid::new_v4().to_string();
         let (event_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
         let (input_tx, mut input_rx) = mpsc::channel::<SessionInput>(64);
 
         let pid = pty.pid();
         let event_tx_clone = event_tx.clone();
         let sid = id.clone();
+        let is_tmux_backed = tmux_session_name.is_some();
 
         // Spawn fan-out task: owns the PtyHandle, reads output, handles input
         tokio::spawn(async move {
@@ -270,6 +325,10 @@ impl SessionManager {
                     }
                 }
             }
+            // If tmux-backed, forget the PtyHandle to avoid killing the tmux session
+            if is_tmux_backed {
+                std::mem::forget(pty);
+            }
         });
 
         let session = Session {
@@ -286,6 +345,7 @@ impl SessionManager {
             input_tx,
             worktree_path: None,
             pty_pid: pid,
+            tmux_session_name,
             scrollback: VecDeque::new(),
             scrollback_bytes: 0,
         };
@@ -339,6 +399,7 @@ impl SessionManager {
             input_tx,
             worktree_path,
             pty_pid: None,
+            tmux_session_name: None,
             scrollback: VecDeque::new(),
             scrollback_bytes: 0,
         };
@@ -392,6 +453,7 @@ impl SessionManager {
             input_tx,
             worktree_path,
             pty_pid: None,
+            tmux_session_name: None,
             scrollback: VecDeque::new(),
             scrollback_bytes: 0,
         };
@@ -434,10 +496,16 @@ impl SessionManager {
             .unwrap_or(false)
     }
 
+    /// Remove session from ZeroMux. If backed by tmux, the tmux session is kept alive (detach).
+    /// Use `kill_session` to also terminate the tmux session.
     pub fn remove_session(&self, id: &str) -> bool {
         let removed = self.sessions.lock().unwrap().remove(id);
         if let Some(session) = removed {
             // Dropping session closes event_tx + input_tx → fan-out task exits
+            // tmux-backed sessions survive (detach behavior)
+            if session.tmux_session_name.is_some() {
+                tracing::info!("Detached from tmux session {:?} (session {})", session.tmux_session_name, id);
+            }
             if let Some(wt_path) = &session.worktree_path {
                 if let Some(worktrees_dir) = wt_path.parent() {
                     if let Some(repo_dir) = worktrees_dir.parent() {
@@ -449,6 +517,34 @@ impl SessionManager {
         } else {
             false
         }
+    }
+
+    /// Kill session: remove from ZeroMux AND kill the underlying tmux session
+    pub fn kill_session(&self, id: &str) -> bool {
+        let removed = self.sessions.lock().unwrap().remove(id);
+        if let Some(session) = removed {
+            if let Some(ref tmux_name) = session.tmux_session_name {
+                let _ = std::process::Command::new("tmux")
+                    .args(["kill-session", "-t", tmux_name])
+                    .output();
+                tracing::info!("Killed tmux session {} (session {})", tmux_name, id);
+            }
+            if let Some(wt_path) = &session.worktree_path {
+                if let Some(worktrees_dir) = wt_path.parent() {
+                    if let Some(repo_dir) = worktrees_dir.parent() {
+                        remove_worktree(repo_dir, wt_path);
+                    }
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get the tmux session name for a given session
+    pub fn tmux_session_name(&self, id: &str) -> Option<String> {
+        self.sessions.lock().unwrap().get(id).and_then(|s| s.tmux_session_name.clone())
     }
 
     // ── Broadcast API: subscribe to session events ──

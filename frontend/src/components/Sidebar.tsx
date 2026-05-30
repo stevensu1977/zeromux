@@ -11,7 +11,7 @@ interface Props {
   activeId: string | null
   onSelect: (id: string) => void
   onCreate: (type: SessionType, workDir?: string, tmuxTarget?: string) => void
-  onDelete: (id: string) => void
+  onDelete: (id: string, kill?: boolean) => void
   onLogout: () => void
   theme: Theme
   onToggleTheme: () => void
@@ -241,9 +241,19 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
               )}
             </div>
             <button
-              onClick={e => { e.stopPropagation(); onDelete(s.id) }}
+              onClick={e => {
+                e.stopPropagation()
+                if (s.type === 'tmux') {
+                  const choice = window.confirm(
+                    'Kill the tmux session? (OK = Kill, Cancel = Detach only)'
+                  )
+                  onDelete(s.id, choice)
+                } else {
+                  onDelete(s.id, true)
+                }
+              }}
               className="p-0.5 opacity-0 group-hover:opacity-100 text-[var(--text-secondary)] hover:text-[var(--accent-red)] transition-all"
-              title="Delete session"
+              title="Close session"
             >
               <X size={12} />
             </button>

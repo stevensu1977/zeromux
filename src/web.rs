@@ -359,17 +359,29 @@ async fn list_sessions(
     Json(serde_json::json!({ "sessions": sessions }))
 }
 
+#[derive(serde::Deserialize, Default)]
+struct DeleteSessionQuery {
+    kill: Option<bool>,
+}
+
 async fn delete_session(
     State(state): State<Arc<AppState>>,
     user: axum::Extension<CurrentUser>,
     axum::extract::Path(id): axum::extract::Path<String>,
+    Query(query): Query<DeleteSessionQuery>,
 ) -> StatusCode {
     // Check ownership (admin can delete any)
     if !user.is_admin() && !state.sessions.is_owner(&id, &user.id) {
         return StatusCode::FORBIDDEN;
     }
 
-    if state.sessions.remove_session(&id) {
+    let removed = if query.kill.unwrap_or(false) {
+        state.sessions.kill_session(&id)
+    } else {
+        state.sessions.remove_session(&id)
+    };
+
+    if removed {
         if let Some(ref logger) = state.logger {
             logger.remove_session(&id);
         }

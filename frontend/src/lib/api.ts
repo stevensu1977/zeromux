@@ -151,8 +151,8 @@ export async function listDirectories(path?: string): Promise<DirListing> {
   return res.json()
 }
 
-export async function deleteSession(id: string): Promise<void> {
-  await api(`/api/sessions/${id}`, { method: 'DELETE' })
+export async function deleteSession(id: string, kill = false): Promise<void> {
+  await api(`/api/sessions/${id}${kill ? '?kill=true' : ''}`, { method: 'DELETE' })
 }
 
 export async function checkAuth(): Promise<UserInfo | null> {
