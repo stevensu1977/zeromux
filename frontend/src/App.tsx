@@ -8,7 +8,7 @@ import AcpChatView from './components/AcpChatView'
 import LoginPage from './components/LoginPage'
 import WaitingPage from './components/WaitingPage'
 import SessionInfoBar from './components/SessionInfoBar'
-import MarkdownViewer from './components/MarkdownViewer'
+import FileBrowser from './components/FileBrowser'
 import GitViewer from './components/GitViewer'
 import AgentDashboard from './components/AgentDashboard'
 
@@ -184,7 +184,7 @@ export default function App() {
                     <AcpChatView sessionId={s.id} active={isActive && view === 'none'} agentType={s.type} />
                   )}
                 </div>
-                {view === 'files' && <MarkdownViewer sessionId={s.id} sessionType={s.type} />}
+                {view === 'files' && <FileBrowser sessionId={s.id} sessionType={s.type} />}
                 {view === 'git' && <GitViewer sessionId={s.id} />}
                 {view === 'events' && <AgentDashboard sessionId={s.id} />}
               </div>

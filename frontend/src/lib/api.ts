@@ -265,6 +265,32 @@ export async function listSessionFiles(id: string, pattern?: string, baseDir?: s
   return data.files || []
 }
 
+export interface TreeEntry {
+  name: string
+  path: string
+  type: 'file' | 'dir'
+  size?: number
+  modified?: number
+}
+
+export async function listSessionTree(id: string, path?: string, baseDir?: string): Promise<{ path: string; entries: TreeEntry[] }> {
+  const params = new URLSearchParams()
+  if (path) params.set('path', path)
+  if (baseDir) params.set('base_dir', baseDir)
+  const qs = params.toString()
+  const res = await api(`/api/sessions/${id}/tree${qs ? `?${qs}` : ''}`)
+  if (!res.ok) throw new Error('Failed to list tree')
+  return res.json()
+}
+
+export function downloadFileUrl(id: string, path: string, baseDir?: string): string {
+  const params = new URLSearchParams({ path })
+  if (baseDir) params.set('base_dir', baseDir)
+  const token = getToken()
+  if (token) params.set('token', token)
+  return `/api/sessions/${id}/file/download?${params}`
+}
+
 export interface FileContent {
   content: string
   binary: boolean

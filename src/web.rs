@@ -30,6 +30,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}/file", delete(delete_session_file))
         .route("/api/sessions/{id}/file/rename", post(rename_session_file))
         .route("/api/sessions/{id}/upload", post(upload_session_file))
+        .route("/api/sessions/{id}/tree", get(list_session_tree))
+        .route("/api/sessions/{id}/file/download", get(download_session_file))
         .route("/api/sessions/{id}/dir", post(create_session_dir))
         .route("/api/sessions/{id}/dir", delete(delete_session_dir))
         .route("/api/sessions/{id}/dir/rename", post(rename_session_dir))
@@ -675,6 +677,143 @@ fn collect_files(
             }
         }
     }
+}
+
+// ── Tree view (lazy directory listing) ──
+
+#[derive(serde::Deserialize)]
+struct TreeQuery {
+    path: Option<String>,
+    base_dir: Option<String>,
+}
+
+async fn list_session_tree(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Query(query): Query<TreeQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let base = resolve_base_dir(&state, &id, query.base_dir.as_deref())?;
+
+    let rel_path = query.path.as_deref().unwrap_or(".");
+    let dir_path = base.join(rel_path).canonicalize()
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid path: {}", e)))?;
+
+    if !dir_path.starts_with(&base) {
+        return Err((StatusCode::FORBIDDEN, "Path traversal denied".to_string()));
+    }
+
+    if !dir_path.is_dir() {
+        return Err((StatusCode::BAD_REQUEST, "Not a directory".to_string()));
+    }
+
+    let read_dir = std::fs::read_dir(&dir_path)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Cannot read directory: {}", e)))?;
+
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+
+    for entry in read_dir.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        // Skip hidden files
+        if name.starts_with('.') { continue; }
+        // Skip noisy directories
+        if matches!(name.as_str(), "node_modules" | "target" | "__pycache__" | ".git") { continue; }
+
+        let entry_path = entry.path();
+        let rel = entry_path.strip_prefix(&base).unwrap_or(&entry_path);
+        let rel_str = rel.to_string_lossy().to_string();
+
+        if entry_path.is_dir() {
+            dirs.push(serde_json::json!({
+                "name": name,
+                "path": rel_str,
+                "type": "dir",
+            }));
+        } else if entry_path.is_file() {
+            let meta = std::fs::metadata(&entry_path);
+            let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let modified = meta.ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            files.push(serde_json::json!({
+                "name": name,
+                "path": rel_str,
+                "type": "file",
+                "size": size,
+                "modified": modified,
+            }));
+        }
+    }
+
+    // Sort alphabetically within each group
+    dirs.sort_by(|a, b| {
+        a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+    });
+    files.sort_by(|a, b| {
+        a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+    });
+
+    // Directories first, then files
+    let mut entries = dirs;
+    entries.append(&mut files);
+
+    // Compute the relative path for the response
+    let response_path = dir_path.strip_prefix(&base)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| ".".to_string());
+    let response_path = if response_path.is_empty() { ".".to_string() } else { response_path };
+
+    Ok(Json(serde_json::json!({
+        "path": response_path,
+        "entries": entries,
+    })))
+}
+
+// ── File download (raw binary) ──
+
+#[derive(serde::Deserialize)]
+struct DownloadQuery {
+    path: String,
+    base_dir: Option<String>,
+}
+
+async fn download_session_file(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Query(query): Query<DownloadQuery>,
+) -> Result<Response, (StatusCode, String)> {
+    let base = resolve_base_dir(&state, &id, query.base_dir.as_deref())?;
+
+    // Security: resolve and check path is under base
+    let file_path = base.join(&query.path).canonicalize()
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid path: {}", e)))?;
+
+    if !file_path.starts_with(&base) {
+        return Err((StatusCode::FORBIDDEN, "Path traversal denied".to_string()));
+    }
+
+    if !file_path.is_file() {
+        return Err((StatusCode::NOT_FOUND, "File not found".to_string()));
+    }
+
+    let bytes = std::fs::read(&file_path)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Cannot read file: {}", e)))?;
+
+    let filename = file_path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "download".to_string());
+
+    let response = Response::builder()
+        .header("Content-Type", "application/octet-stream")
+        .header("Content-Disposition", format!("attachment; filename=\"{}\"", filename))
+        .body(axum::body::Body::from(bytes))
+        .unwrap();
+
+    Ok(response)
 }
 
 #[derive(serde::Deserialize)]
