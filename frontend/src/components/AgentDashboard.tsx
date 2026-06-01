@@ -149,7 +149,7 @@ export default function AgentDashboard({ sessionId: _sessionId }: Props) {
                 key={event.id}
                 event={event}
                 expanded={expandedId === event.id}
-                onDoubleClick={() => setExpandedId(expandedId === event.id ? null : event.id)}
+                onExpand={() => setExpandedId(expandedId === event.id ? null : event.id)}
                 onClose={() => setExpandedId(null)}
                 onDelete={handleDelete}
               />
@@ -171,10 +171,10 @@ export default function AgentDashboard({ sessionId: _sessionId }: Props) {
   )
 }
 
-function EventRow({ event, expanded, onDoubleClick, onClose, onDelete }: {
+function EventRow({ event, expanded, onExpand, onClose, onDelete }: {
   event: AgentEvent
   expanded: boolean
-  onDoubleClick: () => void
+  onExpand: () => void
   onClose: () => void
   onDelete: (id: string) => void
 }) {
@@ -215,7 +215,7 @@ function EventRow({ event, expanded, onDoubleClick, onClose, onDelete }: {
       className={`flex items-start gap-2 px-3 py-2 hover:bg-[var(--bg-tertiary)] transition-colors group ${detail ? 'cursor-pointer' : ''}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onDoubleClick={detail ? onDoubleClick : undefined}
+      onClick={detail ? onExpand : undefined}
     >
       <div className={`mt-0.5 shrink-0 ${color}`}>
         <Icon size={12} />

@@ -134,7 +134,7 @@ export default function TmuxManager({ onClose, onAttach }: Props) {
                       <span>{s.attached > 0 ? 'attached' : 'detached'}</span>
                     </div>
                     <div className="text-[9px] text-[var(--text-muted)]">{formatCreated(s.created)}</div>
-                    <div className="flex items-center gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="flex items-center gap-1 mt-2 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                       {onAttach && (
                         <button
                           onClick={() => { onAttach(s.name); onClose() }}
