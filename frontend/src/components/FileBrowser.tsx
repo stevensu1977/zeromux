@@ -98,6 +98,7 @@ export default function FileBrowser({ sessionId, sessionType }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set(['.']))
   const [children, setChildren] = useState<Record<string, TreeEntry[]>>({})
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set())
+  const [treeError, setTreeError] = useState<string | null>(null)
 
   // Selection & preview
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
@@ -152,7 +153,10 @@ export default function FileBrowser({ sessionId, sessionType }: Props) {
     try {
       const data = await listSessionTree(sessionId, dirPath === '.' ? undefined : dirPath, effectiveBaseDir)
       setChildren(prev => ({ ...prev, [dirPath]: data.entries }))
-    } catch { /* ignore */ }
+      if (dirPath === '.') setTreeError(null)
+    } catch (e: any) {
+      if (dirPath === '.') setTreeError(e.message || 'Failed to load')
+    }
     setLoadingDirs(prev => { const n = new Set(prev); n.delete(dirPath); return n })
   }, [sessionId, effectiveBaseDir])
 
@@ -364,7 +368,12 @@ export default function FileBrowser({ sessionId, sessionType }: Props) {
 
         {/* Tree */}
         <div className="flex-1 overflow-y-auto py-1">
-          {children['.'] ? (
+          {treeError ? (
+            <div className="px-3 py-4 text-center">
+              <p className="text-[10px] text-[var(--accent-red)] mb-1">{treeError}</p>
+              <button onClick={() => loadDir('.')} className="text-[10px] text-[var(--accent-blue)] hover:underline">Retry</button>
+            </div>
+          ) : children['.'] ? (
             <TreeLevel
               entries={children['.']}
               depth={0}

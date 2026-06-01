@@ -175,7 +175,7 @@ export default function App() {
             const view = overlay[s.id] || 'none'
             const isActive = s.id === activeId
             return (
-              <div key={s.id} className={`absolute inset-0 overflow-y-auto overscroll-contain ${isActive ? '' : 'hidden'}`}>
+              <div key={s.id} className={`absolute inset-0 ${isActive ? '' : 'hidden'}`}>
                 {/* Always keep terminal/chat mounted, hide with CSS when overlay is active */}
                 <div className={`h-full ${view !== 'none' ? 'hidden' : ''}`}>
                   {s.type === 'tmux' ? (

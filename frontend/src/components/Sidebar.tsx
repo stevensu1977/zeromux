@@ -229,7 +229,7 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
       {/* Admin Panel overlay */}
       {showAdmin && <AdminPanel onClose={() => setShowAdmin(false)} />}
       {/* Tmux Manager overlay */}
-      {showTmux && <TmuxManager onClose={() => setShowTmux(false)} />}
+      {showTmux && <TmuxManager onClose={() => setShowTmux(false)} onAttach={(target) => onCreate('tmux', undefined, target)} />}
 
       {/* Sessions */}
       <div className="flex-1 overflow-y-auto py-1">

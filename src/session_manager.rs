@@ -242,30 +242,42 @@ impl SessionManager {
         let args_owned: Vec<String>;
 
         if let Some(target) = tmux_target {
+            // Attach to existing tmux session
             cmd = "tmux".to_string();
             args_owned = vec!["attach".to_string(), "-t".to_string(), target.to_string()];
             tmux_session_name = Some(target.to_string());
         } else if has_tmux {
-            let tmux_name = format!("zmux-{}", &id[..8]);
-            let mut create_cmd = std::process::Command::new("tmux");
-            create_cmd.args(["new-session", "-d", "-s", &tmux_name, "-x", &cols.to_string(), "-y", &rows.to_string()]);
-            if let Some(dir) = cwd {
-                create_cmd.args(["-c", dir]);
+            // Use a fixed name based on session name; create-or-attach
+            let tmux_name = format!("zmux-{}", name.replace(' ', "-").to_lowercase());
+            // Check if session already exists
+            let exists = std::process::Command::new("tmux")
+                .args(["has-session", "-t", &tmux_name])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+
+            if !exists {
+                let mut create_cmd = std::process::Command::new("tmux");
+                create_cmd.args(["new-session", "-d", "-s", &tmux_name, "-x", &cols.to_string(), "-y", &rows.to_string()]);
+                if let Some(dir) = cwd {
+                    create_cmd.args(["-c", dir]);
+                }
+                create_cmd.arg(shell);
+                let output = create_cmd.output()
+                    .map_err(|e| format!("Failed to create tmux session: {}", e))?;
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Err(format!("tmux new-session failed: {}", stderr));
+                }
+                let _ = std::process::Command::new("tmux")
+                    .args(["set-option", "-t", &tmux_name, "destroy-unattached", "off"])
+                    .output();
+                let _ = std::process::Command::new("tmux")
+                    .args(["set-option", "-t", &tmux_name, "exit-empty", "off"])
+                    .output();
             }
-            create_cmd.arg(shell);
-            let output = create_cmd.output()
-                .map_err(|e| format!("Failed to create tmux session: {}", e))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(format!("tmux new-session failed: {}", stderr));
-            }
-            // Prevent tmux from destroying the session when last client detaches
-            let _ = std::process::Command::new("tmux")
-                .args(["set-option", "-t", &tmux_name, "destroy-unattached", "off"])
-                .output();
-            let _ = std::process::Command::new("tmux")
-                .args(["set-option", "-t", &tmux_name, "exit-empty", "off"])
-                .output();
             cmd = "tmux".to_string();
             args_owned = vec!["attach".to_string(), "-t".to_string(), tmux_name.clone()];
             tmux_session_name = Some(tmux_name);
@@ -292,6 +304,7 @@ impl SessionManager {
         let event_tx_clone = event_tx.clone();
         let sid = id.clone();
         let is_tmux_backed = tmux_session_name.is_some();
+        let tmux_session_name_clone = tmux_session_name.clone();
 
         // Spawn fan-out task: owns the PtyHandle, reads output, handles input
         tokio::spawn(async move {
@@ -325,10 +338,14 @@ impl SessionManager {
                     }
                 }
             }
-            // If tmux-backed, forget the PtyHandle to avoid killing the tmux session
-            if is_tmux_backed {
-                std::mem::forget(pty);
+            // If tmux-backed, detach the client first then forget the pty handle
+            // to avoid portable_pty killing the tmux session on drop.
+            if let Some(ref name) = tmux_session_name_clone {
+                let _ = std::process::Command::new("tmux")
+                    .args(["detach-client", "-s", name])
+                    .output();
             }
+            std::mem::forget(pty);
         });
 
         let session = Session {

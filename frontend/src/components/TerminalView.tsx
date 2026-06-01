@@ -93,6 +93,7 @@ export default function TerminalView({ sessionId, active, theme }: Props) {
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
       theme: THEMES[theme],
       allowProposedApi: true,
+      scrollback: 10000,
     })
 
     const fit = new FitAddon()
