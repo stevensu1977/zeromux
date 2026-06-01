@@ -126,7 +126,7 @@ export default function App() {
   const activeSession = sessions.find(s => s.id === activeId)
 
   return (
-    <div className="h-full flex bg-[var(--bg-primary)] text-[var(--text-primary)]">
+    <div className="h-full flex bg-[var(--bg-primary)] text-[var(--text-primary)] overflow-hidden">
       <Sidebar
         sessions={sessions}
         activeId={activeId}
@@ -141,7 +141,7 @@ export default function App() {
         onToggle={() => setSidebarOpen(v => !v)}
         mobile={isMobile}
       />
-      <main className="flex-1 min-w-0 flex flex-col">
+      <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
         {/* Info bar for active session */}
         {activeSession && (
           <SessionInfoBar
@@ -170,12 +170,12 @@ export default function App() {
         )}
 
         {/* Main content area */}
-        <div className="flex-1 min-h-0 relative">
+        <div className="flex-1 min-h-0 relative overflow-hidden">
           {sessions.map(s => {
             const view = overlay[s.id] || 'none'
             const isActive = s.id === activeId
             return (
-              <div key={s.id} className={`absolute inset-0 ${isActive ? '' : 'hidden'}`}>
+              <div key={s.id} className={`absolute inset-0 overflow-y-auto overscroll-contain ${isActive ? '' : 'hidden'}`}>
                 {/* Always keep terminal/chat mounted, hide with CSS when overlay is active */}
                 <div className={`h-full ${view !== 'none' ? 'hidden' : ''}`}>
                   {s.type === 'tmux' ? (

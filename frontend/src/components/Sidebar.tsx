@@ -4,6 +4,7 @@ import { listDirectories, listTmuxSessions } from '../lib/api'
 import type { Theme } from '../lib/theme'
 import { Terminal, Bot, Plus, X, PanelLeftClose, PanelLeft, Sun, Moon, Sparkles, Folder, FolderGit2, ChevronLeft, Home, LogOut, Users, MonitorUp, Link } from 'lucide-react'
 import AdminPanel from './AdminPanel'
+import TmuxManager from './TmuxManager'
 import { StatusDot } from './SessionInfoBar'
 
 interface Props {
@@ -27,6 +28,7 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
   const [step, setStep] = useState<NewSessionStep>('closed')
   const [pendingType, setPendingType] = useState<SessionType | null>(null)
   const [showAdmin, setShowAdmin] = useState(false)
+  const [showTmux, setShowTmux] = useState(false)
   const isAdmin = user?.role === 'admin'
 
   // Directory browser state
@@ -184,6 +186,13 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
           </span>
         </div>
         <div className="flex items-center gap-0.5">
+          <button
+            onClick={() => setShowTmux(true)}
+            className="p-1 text-[var(--text-secondary)] hover:text-[var(--accent-blue)] rounded transition-colors"
+            title="Tmux manager"
+          >
+            <Terminal size={14} />
+          </button>
           {isAdmin && (
             <button
               onClick={() => setShowAdmin(true)}
@@ -219,6 +228,8 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
 
       {/* Admin Panel overlay */}
       {showAdmin && <AdminPanel onClose={() => setShowAdmin(false)} />}
+      {/* Tmux Manager overlay */}
+      {showTmux && <TmuxManager onClose={() => setShowTmux(false)} />}
 
       {/* Sessions */}
       <div className="flex-1 overflow-y-auto py-1">
@@ -241,19 +252,9 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
               )}
             </div>
             <button
-              onClick={e => {
-                e.stopPropagation()
-                if (s.type === 'tmux') {
-                  const choice = window.confirm(
-                    'Kill the tmux session? (OK = Kill, Cancel = Detach only)'
-                  )
-                  onDelete(s.id, choice)
-                } else {
-                  onDelete(s.id, true)
-                }
-              }}
-              className="p-0.5 opacity-0 group-hover:opacity-100 text-[var(--text-secondary)] hover:text-[var(--accent-red)] transition-all"
-              title="Close session"
+              onClick={e => { e.stopPropagation(); onDelete(s.id, false) }}
+              className="p-0.5 md:opacity-0 md:group-hover:opacity-100 text-[var(--text-secondary)] hover:text-[var(--accent-red)] transition-all"
+              title="Detach session"
             >
               <X size={12} />
             </button>

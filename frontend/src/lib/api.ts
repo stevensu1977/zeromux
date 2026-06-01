@@ -131,6 +131,22 @@ export async function listTmuxSessions(): Promise<TmuxSession[]> {
   return data.sessions || []
 }
 
+export async function killTmuxSession(name: string): Promise<void> {
+  const res = await api('/api/tmux/sessions/kill', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+}
+
+export async function renameTmuxSession(name: string, newName: string): Promise<void> {
+  const res = await api('/api/tmux/sessions/rename', {
+    method: 'POST',
+    body: JSON.stringify({ name, new_name: newName }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+}
+
 export interface DirEntry {
   name: string
   path: string

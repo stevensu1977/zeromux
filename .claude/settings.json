@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/ubuntu/.local/bin/zeromux-hook stop"
+          }
+        ]
+      }
+    ]
+  }
+}

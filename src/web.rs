@@ -42,6 +42,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/events/{id}", delete(delete_event))
         .route("/api/directories", get(list_directories))
         .route("/api/tmux/sessions", get(list_tmux_sessions))
+        .route("/api/tmux/sessions/kill", post(kill_tmux_session))
+        .route("/api/tmux/sessions/rename", post(rename_tmux_session))
         .route("/api/admin/users", get(crate::admin::list_users))
         .route(
             "/api/admin/users/{id}/approve",
@@ -278,6 +280,47 @@ async fn list_tmux_sessions() -> Json<serde_json::Value> {
     };
 
     Json(serde_json::json!({ "sessions": sessions }))
+}
+
+#[derive(serde::Deserialize)]
+struct TmuxActionReq {
+    name: String,
+    new_name: Option<String>,
+}
+
+async fn kill_tmux_session(
+    Json(req): Json<TmuxActionReq>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let output = std::process::Command::new("tmux")
+        .args(["kill-session", "-t", &req.name])
+        .output()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to run tmux: {}", e)))?;
+
+    if output.status.success() {
+        Ok(StatusCode::OK)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err((StatusCode::BAD_REQUEST, format!("tmux kill-session failed: {}", stderr)))
+    }
+}
+
+async fn rename_tmux_session(
+    Json(req): Json<TmuxActionReq>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let new_name = req.new_name
+        .ok_or((StatusCode::BAD_REQUEST, "new_name required".to_string()))?;
+
+    let output = std::process::Command::new("tmux")
+        .args(["rename-session", "-t", &req.name, &new_name])
+        .output()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to run tmux: {}", e)))?;
+
+    if output.status.success() {
+        Ok(StatusCode::OK)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err((StatusCode::BAD_REQUEST, format!("tmux rename failed: {}", stderr)))
+    }
 }
 
 // ── Session CRUD ──

@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { markdownComponents } from './markdownStyles'
 import { listEvents, deleteEvent } from '../lib/api'
 import type { AgentEvent } from '../lib/api'
-import { Trash2, RefreshCw, Bot, Wrench, CheckCircle, AlertCircle, Flag, Zap } from 'lucide-react'
+import { Trash2, RefreshCw, Bot, Wrench, CheckCircle, AlertCircle, Flag, Zap, X } from 'lucide-react'
 
 interface Props {
   sessionId?: string
@@ -35,6 +38,7 @@ export default function AgentDashboard({ sessionId: _sessionId }: Props) {
   const [events, setEvents] = useState<AgentEvent[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<{ agent?: string; event?: string }>({})
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
   const loadEvents = useCallback(async () => {
     setLoading(true)
@@ -141,7 +145,14 @@ export default function AgentDashboard({ sessionId: _sessionId }: Props) {
         ) : (
           <div className="divide-y divide-[var(--border)]">
             {events.map(event => (
-              <EventRow key={event.id} event={event} onDelete={handleDelete} />
+              <EventRow
+                key={event.id}
+                event={event}
+                expanded={expandedId === event.id}
+                onDoubleClick={() => setExpandedId(expandedId === event.id ? null : event.id)}
+                onClose={() => setExpandedId(null)}
+                onDelete={handleDelete}
+              />
             ))}
           </div>
         )}
@@ -160,20 +171,51 @@ export default function AgentDashboard({ sessionId: _sessionId }: Props) {
   )
 }
 
-function EventRow({ event, onDelete }: { event: AgentEvent; onDelete: (id: string) => void }) {
+function EventRow({ event, expanded, onDoubleClick, onClose, onDelete }: {
+  event: AgentEvent
+  expanded: boolean
+  onDoubleClick: () => void
+  onClose: () => void
+  onDelete: (id: string) => void
+}) {
   const [hovered, setHovered] = useState(false)
   const Icon = EVENT_ICONS[event.event] || Bot
   const color = EVENT_COLORS[event.event] || 'text-[var(--text-secondary)]'
   const agentStyle = AGENT_COLORS[event.agent] || 'bg-gray-500/20 text-gray-300'
 
   const time = formatEventTime(event.timestamp)
-  const toolName = event.metadata?.tool_name
+  const detail = event.metadata?.detail as string | undefined
+
+  if (expanded && detail) {
+    return (
+      <div className="border-b border-[var(--border)]">
+        <div className="flex items-center justify-between px-3 py-1.5 bg-[var(--bg-secondary)] border-b border-[var(--border)]">
+          <div className="flex items-center gap-1.5">
+            <div className={`shrink-0 ${color}`}><Icon size={12} /></div>
+            <span className={`text-[9px] px-1 py-0 rounded ${agentStyle}`}>{event.agent}</span>
+            <span className="text-[9px] text-[var(--text-muted)]">{time}</span>
+          </div>
+          <button onClick={onClose} className="p-0.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
+            <X size={12} />
+          </button>
+        </div>
+        <div className="p-4 max-h-[60vh] overflow-y-auto">
+          <article className="text-sm text-[var(--text-primary)] leading-relaxed">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {detail}
+            </ReactMarkdown>
+          </article>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div
-      className="flex items-start gap-2 px-3 py-2 hover:bg-[var(--bg-tertiary)] transition-colors group"
+      className={`flex items-start gap-2 px-3 py-2 hover:bg-[var(--bg-tertiary)] transition-colors group ${detail ? 'cursor-pointer' : ''}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onDoubleClick={detail ? onDoubleClick : undefined}
     >
       <div className={`mt-0.5 shrink-0 ${color}`}>
         <Icon size={12} />
@@ -187,10 +229,8 @@ function EventRow({ event, onDelete }: { event: AgentEvent; onDelete: (id: strin
           <span className="text-[9px] text-[var(--text-muted)] px-1 py-0 rounded bg-[var(--bg-primary)]">
             {event.event}
           </span>
-          {toolName && (
-            <span className="text-[9px] text-[var(--text-muted)]">
-              {toolName}
-            </span>
+          {detail && (
+            <span className="text-[9px] text-[var(--accent-blue)]">details</span>
           )}
         </div>
         {event.summary && (
