@@ -1,7 +1,48 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { markdownComponents } from './markdownStyles'
+import hljs from 'highlight.js/lib/core'
+import rust from 'highlight.js/lib/languages/rust'
+import typescript from 'highlight.js/lib/languages/typescript'
+import javascript from 'highlight.js/lib/languages/javascript'
+import python from 'highlight.js/lib/languages/python'
+import go from 'highlight.js/lib/languages/go'
+import java from 'highlight.js/lib/languages/java'
+import cpp from 'highlight.js/lib/languages/cpp'
+import c from 'highlight.js/lib/languages/c'
+import bash from 'highlight.js/lib/languages/bash'
+import json from 'highlight.js/lib/languages/json'
+import yaml from 'highlight.js/lib/languages/yaml'
+import css from 'highlight.js/lib/languages/css'
+import xml from 'highlight.js/lib/languages/xml'
+import sql from 'highlight.js/lib/languages/sql'
+import ruby from 'highlight.js/lib/languages/ruby'
+import php from 'highlight.js/lib/languages/php'
+import lua from 'highlight.js/lib/languages/lua'
+import dockerfile from 'highlight.js/lib/languages/dockerfile'
+import markdown from 'highlight.js/lib/languages/markdown'
+import 'highlight.js/styles/github-dark.css'
+
+hljs.registerLanguage('rust', rust)
+hljs.registerLanguage('typescript', typescript)
+hljs.registerLanguage('javascript', javascript)
+hljs.registerLanguage('python', python)
+hljs.registerLanguage('go', go)
+hljs.registerLanguage('java', java)
+hljs.registerLanguage('cpp', cpp)
+hljs.registerLanguage('c', c)
+hljs.registerLanguage('bash', bash)
+hljs.registerLanguage('json', json)
+hljs.registerLanguage('yaml', yaml)
+hljs.registerLanguage('css', css)
+hljs.registerLanguage('xml', xml)
+hljs.registerLanguage('sql', sql)
+hljs.registerLanguage('ruby', ruby)
+hljs.registerLanguage('php', php)
+hljs.registerLanguage('lua', lua)
+hljs.registerLanguage('dockerfile', dockerfile)
+hljs.registerLanguage('markdown', markdown)
 import {
   listSessionTree, getSessionFile, writeSessionFile, deleteSessionFile,
   renameSessionFile, uploadSessionFile, createSessionDir, deleteSessionDir,
@@ -19,7 +60,24 @@ interface Props {
 }
 
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'])
-const CODE_EXTENSIONS = new Set(['rs', 'ts', 'tsx', 'js', 'jsx', 'py', 'go', 'java', 'c', 'cpp', 'h', 'sh', 'bash', 'zsh', 'toml', 'yaml', 'yml', 'json', 'css', 'html', 'sql', 'lua', 'rb', 'php'])
+const CODE_EXTENSIONS = new Set(['rs', 'ts', 'tsx', 'js', 'jsx', 'py', 'go', 'java', 'c', 'cpp', 'h', 'sh', 'bash', 'zsh', 'toml', 'yaml', 'yml', 'json', 'css', 'html', 'sql', 'lua', 'rb', 'php', 'dockerfile'])
+
+const EXT_TO_LANG: Record<string, string> = {
+  rs: 'rust', ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript',
+  py: 'python', go: 'go', java: 'java', c: 'c', cpp: 'cpp', h: 'c',
+  sh: 'bash', bash: 'bash', zsh: 'bash',
+  toml: 'yaml', yaml: 'yaml', yml: 'yaml',
+  json: 'json', css: 'css', html: 'xml', xml: 'xml',
+  sql: 'sql', lua: 'lua', rb: 'ruby', php: 'php',
+  dockerfile: 'dockerfile', md: 'markdown',
+}
+
+function getLangForFile(path: string): string | undefined {
+  const name = path.split('/').pop()?.toLowerCase() || ''
+  if (name === 'dockerfile') return 'dockerfile'
+  const ext = name.split('.').pop() || ''
+  return EXT_TO_LANG[ext]
+}
 
 function isImageFile(name: string): boolean {
   const ext = name.split('.').pop()?.toLowerCase() || ''
@@ -401,7 +459,7 @@ export default function FileBrowser({ sessionId, sessionType }: Props) {
                 </article>
               </div>
             ) : (
-              <pre className="p-6 text-sm font-mono text-[var(--text-primary)] whitespace-pre-wrap break-words leading-relaxed">{content}</pre>
+              <CodeBlock content={content} path={selectedPath} />
             )
           ) : (
             <div className="flex items-center justify-center h-full text-sm text-[var(--text-muted)]">
@@ -411,6 +469,31 @@ export default function FileBrowser({ sessionId, sessionType }: Props) {
         </div>
       </div>
     </div>
+  )
+}
+
+// ── Code Block with Syntax Highlighting ──
+
+function CodeBlock({ content, path }: { content: string; path: string }) {
+  const highlighted = useMemo(() => {
+    const lang = getLangForFile(path)
+    if (lang && hljs.getLanguage(lang)) {
+      try {
+        return hljs.highlight(content, { language: lang }).value
+      } catch { /* fallback */ }
+    }
+    return null
+  }, [content, path])
+
+  if (highlighted) {
+    return (
+      <pre className="p-6 text-sm leading-relaxed overflow-x-auto">
+        <code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted }} />
+      </pre>
+    )
+  }
+  return (
+    <pre className="p-6 text-sm font-mono text-[var(--text-primary)] whitespace-pre-wrap break-words leading-relaxed">{content}</pre>
   )
 }
 
