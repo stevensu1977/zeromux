@@ -309,6 +309,16 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
                       <div className="text-[10px] text-[var(--text-secondary)]">AI coding agent (ACP)</div>
                     </div>
                   </button>
+                  <button
+                    onClick={() => selectType('codex')}
+                    className="flex items-center gap-2.5 w-full px-3 py-2 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
+                  >
+                    <Terminal size={14} className="text-green-400 shrink-0" />
+                    <div className="text-left">
+                      <div className="font-medium">Codex</div>
+                      <div className="text-[10px] text-[var(--text-secondary)]">OpenAI coding agent</div>
+                    </div>
+                  </button>
                 </>
               )}
 

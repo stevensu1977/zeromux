@@ -44,7 +44,7 @@ interface ServerEvent {
 interface Props {
   sessionId: string
   active: boolean
-  agentType?: 'claude' | 'kiro'
+  agentType?: 'claude' | 'kiro' | 'codex'
 }
 
 export default function AcpChatView({ sessionId, active, agentType = 'claude' }: Props) {
@@ -185,7 +185,7 @@ export default function AcpChatView({ sessionId, active, agentType = 'claude' }:
     <div className="flex flex-col h-full">
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
         {messages.map((msg, i) => (
-          <MessageBubble key={i} msg={msg} agentName={agentType === 'kiro' ? 'Kiro' : 'Claude'} />
+          <MessageBubble key={i} msg={msg} agentName={agentType === 'kiro' ? 'Kiro' : agentType === 'codex' ? 'Codex' : 'Claude'} />
         ))}
       </div>
 
@@ -195,7 +195,7 @@ export default function AcpChatView({ sessionId, active, agentType = 'claude' }:
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={`Send a message to ${agentType === 'kiro' ? 'Kiro' : 'Claude'}...`}
+          placeholder={`Send a message to ${agentType === 'kiro' ? 'Kiro' : agentType === 'codex' ? 'Codex' : 'Claude'}...`}
           rows={1}
           className="flex-1 px-3 py-2 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] outline-none focus:border-[var(--accent-blue)] resize-none min-h-[40px] max-h-[120px]"
           style={{ height: 'auto', overflow: 'hidden' }}
