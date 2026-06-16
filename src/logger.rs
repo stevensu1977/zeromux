@@ -97,11 +97,7 @@ impl Logger {
         let sid = short_id(session_id);
         let rings = self.rings.lock().unwrap();
         if let Some(ring) = rings.get(&sid) {
-            ring.iter()
-                .skip(offset)
-                .take(limit)
-                .cloned()
-                .collect()
+            ring.iter().skip(offset).take(limit).cloned().collect()
         } else {
             vec![]
         }

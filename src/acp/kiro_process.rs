@@ -48,10 +48,20 @@ fn classify(val: &serde_json::Value) -> RpcFrame {
         (Some(_), None) => {
             if let Some(err) = val.get("error") {
                 let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
-                let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("").to_string();
-                RpcFrame::Response { result: None, error: Some((code, msg)) }
+                let msg = err
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                RpcFrame::Response {
+                    result: None,
+                    error: Some((code, msg)),
+                }
             } else {
-                RpcFrame::Response { result: val.get("result").cloned(), error: None }
+                RpcFrame::Response {
+                    result: val.get("result").cloned(),
+                    error: None,
+                }
             }
         }
         (None, Some(method)) => RpcFrame::Notification {
@@ -103,14 +113,19 @@ impl KiroProcess {
         let mut lines = reader.lines();
 
         // ── Handshake step 1: initialize ──
-        write_rpc(&mut stdin, 0, "initialize", serde_json::json!({
-            "protocolVersion": 1,
-            "clientCapabilities": {
-                "fs": { "readTextFile": true, "writeTextFile": true },
-                "terminal": true
-            },
-            "clientInfo": { "name": "zeromux", "version": "0.1.0" }
-        }))
+        write_rpc(
+            &mut stdin,
+            0,
+            "initialize",
+            serde_json::json!({
+                "protocolVersion": 1,
+                "clientCapabilities": {
+                    "fs": { "readTextFile": true, "writeTextFile": true },
+                    "terminal": true
+                },
+                "clientInfo": { "name": "zeromux", "version": "0.1.0" }
+            }),
+        )
         .await?;
 
         drain_until_response(&mut lines).await?;
@@ -122,15 +137,23 @@ impl KiroProcess {
             work_dir.to_string()
         };
 
-        write_rpc(&mut stdin, 1, "session/new", serde_json::json!({
-            "cwd": cwd,
-            "mcpServers": []
-        }))
+        write_rpc(
+            &mut stdin,
+            1,
+            "session/new",
+            serde_json::json!({
+                "cwd": cwd,
+                "mcpServers": []
+            }),
+        )
         .await?;
 
         let resp = drain_until_response(&mut lines).await?;
         let session_id = resp
-            .and_then(|r| r.get("sessionId").and_then(|v| v.as_str().map(String::from)))
+            .and_then(|r| {
+                r.get("sessionId")
+                    .and_then(|v| v.as_str().map(String::from))
+            })
             .unwrap_or_else(|| "unknown".to_string());
 
         // ── Wire up channels and spawn event loop ──
@@ -146,7 +169,11 @@ impl KiroProcess {
 
         tokio::spawn(run_event_loop(lines, stdin, event_tx, cmd_rx, session_id));
 
-        Ok(Self { child, cmd_tx, event_rx })
+        Ok(Self {
+            child,
+            cmd_tx,
+            event_rx,
+        })
     }
 
     pub async fn send_prompt(&mut self, text: &str) -> Result<(), std::io::Error> {
@@ -218,7 +245,10 @@ async fn drain_until_response(
         }
         let val: serde_json::Value = serde_json::from_str(&raw)?;
         match classify(&val) {
-            RpcFrame::Response { result, error: Some((code, msg)) } => {
+            RpcFrame::Response {
+                result,
+                error: Some((code, msg)),
+            } => {
                 drop(result);
                 return Err(format!("RPC error {code}: {msg}").into());
             }
@@ -305,8 +335,13 @@ async fn dispatch_frame(
 ) -> Vec<AcpEvent> {
     match frame {
         // Turn-complete response from session/prompt
-        RpcFrame::Response { error: Some((code, msg)), .. } => {
-            vec![AcpEvent::Error { message: format!("RPC error {code}: {msg}") }]
+        RpcFrame::Response {
+            error: Some((code, msg)),
+            ..
+        } => {
+            vec![AcpEvent::Error {
+                message: format!("RPC error {code}: {msg}"),
+            }]
         }
         RpcFrame::Response { .. } => {
             let text = std::mem::take(pending_text);
@@ -319,9 +354,13 @@ async fn dispatch_frame(
 
         // Permission request — auto-approve so the agent can run unattended
         RpcFrame::Request { id, method, .. } if method == "session/request_permission" => {
-            let _ = write_response(stdin, &id, serde_json::json!({
-                "outcome": { "outcome": "selected", "optionId": "allow-once" }
-            }))
+            let _ = write_response(
+                stdin,
+                &id,
+                serde_json::json!({
+                    "outcome": { "outcome": "selected", "optionId": "allow-once" }
+                }),
+            )
             .await;
             vec![]
         }
@@ -349,7 +388,10 @@ fn parse_session_update(
     let Some(params) = params else { return vec![] };
     let update = params.get("update");
     let Some(update) = update else { return vec![] };
-    let kind = update.get("sessionUpdate").and_then(|v| v.as_str()).unwrap_or("");
+    let kind = update
+        .get("sessionUpdate")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
     match kind {
         "agent_message_chunk" => {

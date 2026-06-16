@@ -66,10 +66,17 @@ impl NotesStore {
 
         // Title: first line, truncated
         let title = text.lines().next().unwrap_or(text);
-        let title = if title.len() > 100 { &title[..100] } else { title };
+        let title = if title.len() > 100 {
+            &title[..100]
+        } else {
+            title
+        };
 
         // File name: YYYYMMDD_HHMMSS_id.md
-        let date_part = created_at.replace('-', "").replace(':', "").replace('T', "_");
+        let date_part = created_at
+            .replace('-', "")
+            .replace(':', "")
+            .replace('T', "_");
         let date_part = date_part.split('.').next().unwrap_or(&date_part);
         let date_part = date_part.trim_end_matches('Z');
         let file_name = format!("{}_{}.md", date_part, &id[..4.min(id.len())]);
@@ -120,8 +127,7 @@ impl NotesStore {
         let notes = stmt
             .query_map(params![work_dir], |row| {
                 let tags_str: String = row.get(6)?;
-                let tags: Vec<String> =
-                    serde_json::from_str(&tags_str).unwrap_or_default();
+                let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
                 Ok(NoteEntry {
                     id: row.get(0)?,
                     work_dir: row.get(1)?,

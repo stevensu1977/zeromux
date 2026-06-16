@@ -2,9 +2,9 @@ import { useState, useEffect, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { markdownComponents } from './markdownStyles'
-import { listEvents, deleteEvent } from '../lib/api'
+import { listEvents, deleteEvent, saveToContext } from '../lib/api'
 import type { AgentEvent } from '../lib/api'
-import { Trash2, RefreshCw, Bot, Wrench, CheckCircle, AlertCircle, Flag, Zap, X } from 'lucide-react'
+import { Trash2, RefreshCw, Bot, Wrench, CheckCircle, AlertCircle, Flag, Zap, X, BookmarkPlus } from 'lucide-react'
 
 interface Props {
   sessionId?: string
@@ -186,6 +186,16 @@ function EventRow({ event, expanded, onExpand, onClose, onDelete }: {
   const time = formatEventTime(event.timestamp)
   const detail = event.metadata?.detail as string | undefined
 
+  const handleSaveContext = async () => {
+    if (!detail || !event.work_dir) return
+    try {
+      await saveToContext(event.work_dir, detail, event.summary.slice(0, 80))
+      alert('Saved to .zeromux/context/')
+    } catch (e: any) {
+      alert(`Save failed: ${e.message}`)
+    }
+  }
+
   if (expanded && detail) {
     return (
       <div className="border-b border-[var(--border)]">
@@ -195,9 +205,16 @@ function EventRow({ event, expanded, onExpand, onClose, onDelete }: {
             <span className={`text-[9px] px-1 py-0 rounded ${agentStyle}`}>{event.agent}</span>
             <span className="text-[9px] text-[var(--text-muted)]">{time}</span>
           </div>
-          <button onClick={onClose} className="p-0.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
-            <X size={12} />
-          </button>
+          <div className="flex items-center gap-1">
+            {event.work_dir && (
+              <button onClick={handleSaveContext} className="p-0.5 text-[var(--text-secondary)] hover:text-[var(--accent-green-text)]" title="Save to .zeromux/context/">
+                <BookmarkPlus size={12} />
+              </button>
+            )}
+            <button onClick={onClose} className="p-0.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
+              <X size={12} />
+            </button>
+          </div>
         </div>
         <div className="p-4 max-h-[60vh] overflow-y-auto">
           <article className="text-sm text-[var(--text-primary)] leading-relaxed">

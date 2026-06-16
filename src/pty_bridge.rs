@@ -77,7 +77,11 @@ impl PtyHandle {
         self.writer.flush()
     }
 
-    pub fn resize(&self, cols: u16, rows: u16) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub fn resize(
+        &self,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.master.resize(PtySize {
             rows,
             cols,

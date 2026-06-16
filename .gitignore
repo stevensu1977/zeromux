@@ -1,4 +1,6 @@
 /target
+.env
+.zeromux/
 .zeromux-worktrees/
 zeromux.log
 zeromux.pid

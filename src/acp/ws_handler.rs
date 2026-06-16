@@ -74,18 +74,16 @@ async fn handle_acp_ws(socket: WebSocket, session_id: String, state: Arc<AppStat
     let history = state.sessions.get_scrollback(&session_id);
     let has_history = !history.is_empty();
     for json in history {
-        if ws_sink
-            .send(Message::Text(json.into()))
-            .await
-            .is_err()
-        {
+        if ws_sink.send(Message::Text(json.into())).await.is_err() {
             return;
         }
     }
     // Signal that replay is done so the frontend can reset busy state
     if has_history {
         let done_msg = serde_json::json!({"type": "replay_done"});
-        let _ = ws_sink.send(Message::Text(done_msg.to_string().into())).await;
+        let _ = ws_sink
+            .send(Message::Text(done_msg.to_string().into()))
+            .await;
     }
 
     let logger = state.logger.clone();

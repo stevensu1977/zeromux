@@ -70,7 +70,10 @@ impl EventStore {
 
     pub fn create(&self, req: CreateEventReq) -> Result<AgentEvent, String> {
         let conn = self.conn.lock().unwrap();
-        let id = format!("evt_{}", uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string());
+        let id = format!(
+            "evt_{}",
+            uuid::Uuid::new_v4().to_string().replace('-', "")[..12].to_string()
+        );
         let timestamp = now_iso();
         let metadata_str = req.metadata.as_ref().map(|m| m.to_string());
 
@@ -132,9 +135,12 @@ impl EventStore {
         param_values.push(Box::new(limit as i64));
         sql.push_str(&format!(" LIMIT ?{}", param_values.len()));
 
-        let mut stmt = conn.prepare(&sql).map_err(|e| format!("Query error: {}", e))?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Query error: {}", e))?;
 
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
 
         let events = stmt
             .query_map(params_refs.as_slice(), |row| {
@@ -169,7 +175,10 @@ impl EventStore {
     pub fn delete_by_session(&self, session_id: &str) -> Result<usize, String> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
-            .execute("DELETE FROM agent_events WHERE session_id = ?1", params![session_id])
+            .execute(
+                "DELETE FROM agent_events WHERE session_id = ?1",
+                params![session_id],
+            )
             .map_err(|e| format!("Delete error: {}", e))?;
         Ok(rows)
     }
@@ -177,7 +186,10 @@ impl EventStore {
     pub fn delete_before(&self, before: &str) -> Result<usize, String> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
-            .execute("DELETE FROM agent_events WHERE timestamp < ?1", params![before])
+            .execute(
+                "DELETE FROM agent_events WHERE timestamp < ?1",
+                params![before],
+            )
             .map_err(|e| format!("Delete error: {}", e))?;
         Ok(rows)
     }

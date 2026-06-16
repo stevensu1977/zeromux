@@ -7,6 +7,7 @@ mod logger;
 mod notes;
 mod oauth;
 mod pty_bridge;
+mod recordings;
 mod session_manager;
 mod web;
 mod ws_handler;
@@ -15,7 +16,10 @@ use clap::Parser;
 use std::sync::Arc;
 
 #[derive(Parser)]
-#[command(name = "zeromux", about = "Web-based tmux - minimal terminal multiplexer in your browser")]
+#[command(
+    name = "zeromux",
+    about = "Web-based tmux - minimal terminal multiplexer in your browser"
+)]
 struct Args {
     /// Listen port
     #[arg(short, long, default_value = "8080")]
@@ -100,6 +104,7 @@ pub struct AppState {
     pub db: Option<db::Database>,
     pub notes: notes::NotesStore,
     pub events: events::EventStore,
+    pub recordings: recordings::RecordingStore,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
     pub jwt_secret: String,
@@ -126,8 +131,7 @@ async fn main() {
 
     let args = Args::parse();
 
-    let oauth_configured =
-        args.github_client_id.is_some() && args.github_client_secret.is_some();
+    let oauth_configured = args.github_client_id.is_some() && args.github_client_secret.is_some();
 
     // In OAuth mode, password is optional fallback. In legacy mode, it's required.
     let password_hash = if oauth_configured {
@@ -144,9 +148,7 @@ async fn main() {
         Some(auth::hash_password(&password))
     };
 
-    let jwt_secret = args
-        .jwt_secret
-        .unwrap_or_else(|| gen_random_string(32));
+    let jwt_secret = args.jwt_secret.unwrap_or_else(|| gen_random_string(32));
 
     // Resolve data dir (expand ~)
     let data_dir_str = if args.data_dir.starts_with("~/") {
@@ -174,16 +176,21 @@ async fn main() {
 
     let allowed_users: Vec<String> = args
         .allowed_users
-        .map(|s| s.split(',').map(|u| u.trim().to_string()).filter(|u| !u.is_empty()).collect())
+        .map(|s| {
+            s.split(',')
+                .map(|u| u.trim().to_string())
+                .filter(|u| !u.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
 
     if !allowed_users.is_empty() {
         println!("Pre-approved users: {}", allowed_users.join(", "));
     }
 
-    let external_url = args.external_url.unwrap_or_else(|| {
-        format!("http://{}:{}", args.host, args.port)
-    });
+    let external_url = args
+        .external_url
+        .unwrap_or_else(|| format!("http://{}:{}", args.host, args.port));
 
     let logger = logger::Logger::start(args.log_dir.as_deref());
     if logger.is_some() {
@@ -195,6 +202,8 @@ async fn main() {
 
     let event_store = events::EventStore::open(std::path::Path::new(&data_dir_str))
         .expect("Failed to initialize event store");
+    let recording_store = recordings::RecordingStore::open(std::path::Path::new(&data_dir_str))
+        .expect("Failed to initialize recording store");
 
     if oauth_configured {
         println!("GitHub OAuth enabled");
@@ -216,6 +225,7 @@ async fn main() {
         db: database,
         notes: notes_store,
         events: event_store,
+        recordings: recording_store,
         github_client_id: args.github_client_id,
         github_client_secret: args.github_client_secret,
         jwt_secret,

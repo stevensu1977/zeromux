@@ -91,6 +91,8 @@ pub struct Session {
     pty_pid: Option<u32>,
     /// Underlying tmux session name (if backed by tmux)
     tmux_session_name: Option<String>,
+    /// Active recording: (file_path, start_snapshot_lines)
+    recording: Option<(PathBuf, Vec<String>)>,
     /// Output history for replay on reconnect (base64 for PTY, JSON for ACP/Kiro)
     scrollback: VecDeque<String>,
     scrollback_bytes: usize,
@@ -111,6 +113,18 @@ pub struct SessionInfo {
     pub work_dir: String,
     pub description: String,
     pub status: SessionMeta,
+}
+
+pub struct RecordingStart {
+    pub file_path: PathBuf,
+    pub work_dir: String,
+    pub session_name: String,
+    pub tmux_name: String,
+}
+
+pub struct RecordingStop {
+    pub file_path: PathBuf,
+    pub new_line_count: usize,
 }
 
 // ── Git worktree helpers ──
@@ -262,12 +276,22 @@ impl SessionManager {
 
             if !exists {
                 let mut create_cmd = std::process::Command::new("tmux");
-                create_cmd.args(["new-session", "-d", "-s", &tmux_name, "-x", &cols.to_string(), "-y", &rows.to_string()]);
+                create_cmd.args([
+                    "new-session",
+                    "-d",
+                    "-s",
+                    &tmux_name,
+                    "-x",
+                    &cols.to_string(),
+                    "-y",
+                    &rows.to_string(),
+                ]);
                 if let Some(dir) = cwd {
                     create_cmd.args(["-c", dir]);
                 }
                 create_cmd.arg(shell);
-                let output = create_cmd.output()
+                let output = create_cmd
+                    .output()
                     .map_err(|e| format!("Failed to create tmux session: {}", e))?;
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -294,7 +318,10 @@ impl SessionManager {
             .map_err(|e| format!("Failed to spawn PTY: {}", e))?;
 
         let effective_dir = if work_dir.is_empty() || work_dir == "." {
-            std::env::current_dir().unwrap_or_default().to_string_lossy().to_string()
+            std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
         } else {
             work_dir.to_string()
         };
@@ -305,7 +332,7 @@ impl SessionManager {
         let pid = pty.pid();
         let event_tx_clone = event_tx.clone();
         let sid = id.clone();
-        let is_tmux_backed = tmux_session_name.is_some();
+        let _is_tmux_backed = tmux_session_name.is_some();
         let tmux_session_name_clone = tmux_session_name.clone();
 
         // Spawn fan-out task: owns the PtyHandle, reads output, handles input
@@ -365,6 +392,7 @@ impl SessionManager {
             worktree_path: None,
             pty_pid: pid,
             tmux_session_name,
+            recording: None,
             scrollback: VecDeque::new(),
             scrollback_bytes: 0,
         };
@@ -419,6 +447,7 @@ impl SessionManager {
             worktree_path,
             pty_pid: None,
             tmux_session_name: None,
+            recording: None,
             scrollback: VecDeque::new(),
             scrollback_bytes: 0,
         };
@@ -473,6 +502,7 @@ impl SessionManager {
             worktree_path,
             pty_pid: None,
             tmux_session_name: None,
+            recording: None,
             scrollback: VecDeque::new(),
             scrollback_bytes: 0,
         };
@@ -529,6 +559,7 @@ impl SessionManager {
             worktree_path,
             pty_pid: None,
             tmux_session_name: None,
+            recording: None,
             scrollback: VecDeque::new(),
             scrollback_bytes: 0,
         };
@@ -543,11 +574,7 @@ impl SessionManager {
             .lock()
             .unwrap()
             .values()
-            .filter(|s| {
-                owner_filter
-                    .map(|uid| s.owner_id == uid)
-                    .unwrap_or(true)
-            })
+            .filter(|s| owner_filter.map(|uid| s.owner_id == uid).unwrap_or(true))
             .map(|s| SessionInfo {
                 id: s.id.clone(),
                 name: s.name.clone(),
@@ -576,10 +603,32 @@ impl SessionManager {
     pub fn remove_session(&self, id: &str) -> bool {
         let removed = self.sessions.lock().unwrap().remove(id);
         if let Some(session) = removed {
+            // Flush recording if active (capture remaining output)
+            if let (Some(ref tmux_name), Some((ref file_path, ref baseline))) =
+                (&session.tmux_session_name, &session.recording)
+            {
+                let current = capture_pane_content(tmux_name);
+                let skip = find_divergence_point(baseline, &current);
+                let new_lines = &current[skip..];
+                if !new_lines.is_empty() {
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(file_path)
+                    {
+                        use std::io::Write;
+                        let _ = writeln!(file, "{}", new_lines.join("\n"));
+                    }
+                }
+            }
             // Dropping session closes event_tx + input_tx → fan-out task exits
             // tmux-backed sessions survive (detach behavior)
             if session.tmux_session_name.is_some() {
-                tracing::info!("Detached from tmux session {:?} (session {})", session.tmux_session_name, id);
+                tracing::info!(
+                    "Detached from tmux session {:?} (session {})",
+                    session.tmux_session_name,
+                    id
+                );
             }
             if let Some(wt_path) = &session.worktree_path {
                 if let Some(worktrees_dir) = wt_path.parent() {
@@ -619,7 +668,11 @@ impl SessionManager {
 
     /// Get the tmux session name for a given session
     pub fn tmux_session_name(&self, id: &str) -> Option<String> {
-        self.sessions.lock().unwrap().get(id).and_then(|s| s.tmux_session_name.clone())
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .and_then(|s| s.tmux_session_name.clone())
     }
 
     // ── Broadcast API: subscribe to session events ──
@@ -666,7 +719,11 @@ impl SessionManager {
 
     /// Get session type for a given id
     pub fn session_type(&self, id: &str) -> Option<SessionType> {
-        self.sessions.lock().unwrap().get(id).map(|s| s.session_type)
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|s| s.session_type)
     }
 
     /// Push output data to the scrollback buffer (base64 for PTY, JSON for ACP/Kiro)
@@ -695,13 +752,248 @@ impl SessionManager {
 
     /// Get work_dir for a session
     pub fn work_dir(&self, id: &str) -> Option<String> {
-        self.sessions.lock().unwrap().get(id).map(|s| s.work_dir.clone())
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|s| s.work_dir.clone())
     }
 
     /// Get PTY child PID for a session
     pub fn pty_pid(&self, id: &str) -> Option<u32> {
-        self.sessions.lock().unwrap().get(id).and_then(|s| s.pty_pid)
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .and_then(|s| s.pty_pid)
     }
+
+    /// Start recording: snapshot current pane content as baseline
+    pub fn start_recording(&self, id: &str) -> Result<RecordingStart, String> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let session = sessions.get_mut(id).ok_or("Session not found")?;
+
+        if session.recording.is_some() {
+            return Err("Already recording".to_string());
+        }
+
+        let tmux_name = session
+            .tmux_session_name
+            .clone()
+            .ok_or("Not a tmux-backed session")?;
+        let work_dir = session.work_dir.clone();
+        let session_name = session.name.clone();
+
+        let context_dir = PathBuf::from(&work_dir).join(".zeromux").join("context");
+        std::fs::create_dir_all(&context_dir)
+            .map_err(|e| format!("Cannot create context dir: {}", e))?;
+
+        let now = chrono_now();
+        let safe_name = safe_filename_component(&session_name);
+        let mut filename = format!("{}-{}.log", safe_name, now);
+        let mut file_path = context_dir.join(&filename);
+        if file_path.exists() {
+            let suffix = uuid::Uuid::new_v4().to_string().replace('-', "");
+            filename = format!("{}-{}-{}.log", safe_name, now, &suffix[..8]);
+            file_path = context_dir.join(&filename);
+        }
+        std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&file_path)
+            .map_err(|e| format!("Cannot create recording file: {}", e))?;
+
+        // Snapshot current pane as baseline (non-blank lines from bottom)
+        let baseline = capture_pane_content(&tmux_name);
+
+        session.recording = Some((file_path.clone(), baseline));
+        tracing::info!("Started recording session {}", id);
+        Ok(RecordingStart {
+            file_path,
+            work_dir,
+            session_name,
+            tmux_name,
+        })
+    }
+
+    /// Stop recording: capture-pane, diff against baseline, append new content to file
+    pub fn stop_recording(&self, id: &str) -> Result<Option<RecordingStop>, String> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let session = sessions.get_mut(id).ok_or("Session not found")?;
+
+        let recording = session.recording.take();
+        if let Some((file_path, baseline)) = recording {
+            let tmux_name = session
+                .tmux_session_name
+                .as_ref()
+                .ok_or("Not a tmux-backed session")?;
+
+            let current = capture_pane_content(tmux_name);
+
+            // Find where current diverges from baseline
+            // The baseline is a suffix of an earlier capture; find how much new content appeared
+            let skip = find_divergence_point(&baseline, &current);
+            let new_lines = &current[skip..];
+
+            if !new_lines.is_empty() {
+                let new_content = new_lines.join("\n");
+                use std::io::Write;
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&file_path)
+                    .map_err(|e| format!("Cannot open file: {}", e))?;
+                writeln!(file, "{}", new_content).map_err(|e| format!("Write failed: {}", e))?;
+            }
+
+            tracing::info!(
+                "Stopped recording session {} ({} new lines)",
+                id,
+                new_lines.len()
+            );
+            Ok(Some(RecordingStop {
+                file_path,
+                new_line_count: new_lines.len(),
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Get current recording status
+    pub fn recording_status(&self, id: &str) -> Option<Option<PathBuf>> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|s| s.recording.as_ref().map(|(p, _)| p.clone()))
+    }
+}
+
+/// Capture current pane content as Vec of non-trailing-blank lines
+fn capture_pane_content(tmux_name: &str) -> Vec<String> {
+    let output = std::process::Command::new("tmux")
+        .args(["capture-pane", "-p", "-J", "-S", "-", "-t", tmux_name])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    // Trim trailing blank lines
+    let lines: Vec<String> = output.lines().map(|l| l.to_string()).collect();
+    let end = lines
+        .iter()
+        .rposition(|l| !l.trim().is_empty())
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    lines[..end].to_vec()
+}
+
+fn safe_filename_component(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut last_was_dash = false;
+
+    for ch in input.chars() {
+        let next = if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+            last_was_dash = false;
+            Some(ch.to_ascii_lowercase())
+        } else {
+            if last_was_dash {
+                None
+            } else {
+                last_was_dash = true;
+                Some('-')
+            }
+        };
+        if let Some(ch) = next {
+            out.push(ch);
+        }
+    }
+
+    let trimmed = out.trim_matches('-').trim_matches('.');
+    if trimmed.is_empty() {
+        "session".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Find where `current` diverges from `baseline`.
+/// Returns the index in `current` from which new content starts.
+fn find_divergence_point(baseline: &[String], current: &[String]) -> usize {
+    if baseline.is_empty() {
+        return 0;
+    }
+    // The last non-blank line of baseline should appear somewhere in current.
+    // Find the longest matching suffix of baseline in current.
+    let bl = baseline.len();
+    let cl = current.len();
+
+    // Try to find baseline's last few lines in current as an anchor
+    let anchor_size = bl.min(5); // use last 5 lines as anchor
+    let anchor = &baseline[bl - anchor_size..];
+
+    // Search for anchor in current
+    if cl >= anchor_size {
+        for start in (0..=(cl - anchor_size)).rev() {
+            if &current[start..start + anchor_size] == anchor {
+                return start + anchor_size;
+            }
+        }
+    }
+    // Fallback: if baseline is a prefix of current, skip baseline length
+    let common = baseline
+        .iter()
+        .zip(current.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    if common > 0 {
+        common
+    } else {
+        0
+    }
+}
+
+/// Generate timestamp string for filenames: YYYYMMDD-HHmmss
+fn chrono_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days = secs / 86400;
+    let mut y = 1970i64;
+    let mut remaining = days as i64;
+    loop {
+        let diy = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+            366
+        } else {
+            365
+        };
+        if remaining < diy {
+            break;
+        }
+        remaining -= diy;
+        y += 1;
+    }
+    let months: [i64; 12] = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    let mut mo = 1;
+    for &md in &months {
+        if remaining < md {
+            break;
+        }
+        remaining -= md;
+        mo += 1;
+    }
+    let day = remaining + 1;
+    let time_secs = secs % 86400;
+    let h = time_secs / 3600;
+    let m = (time_secs % 3600) / 60;
+    let s = time_secs % 60;
+    format!("{:04}{:02}{:02}-{:02}{:02}{:02}", y, mo, day, h, m, s)
 }
 
 // ── Fan-out tasks for ACP/Kiro processes ──
@@ -787,7 +1079,6 @@ fn spawn_kiro_fanout(
         tracing::info!("Kiro fan-out task ended for session {}", sid);
     });
 }
-
 
 fn spawn_codex_fanout(
     sid: String,

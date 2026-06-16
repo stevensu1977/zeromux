@@ -63,8 +63,10 @@ impl AcpProcess {
         let mut child = tokio::process::Command::new(claude_path)
             .args([
                 "-p",
-                "--output-format", "stream-json",
-                "--input-format", "stream-json",
+                "--output-format",
+                "stream-json",
+                "--input-format",
+                "stream-json",
                 "--verbose",
                 "--dangerously-skip-permissions",
             ])
@@ -91,7 +93,10 @@ impl AcpProcess {
                 let val: serde_json::Value = match serde_json::from_str(&line) {
                     Ok(v) => v,
                     Err(e) => {
-                        tracing::debug!("stream-json: bad line: {e} — {}", &line[..line.len().min(200)]);
+                        tracing::debug!(
+                            "stream-json: bad line: {e} — {}",
+                            &line[..line.len().min(200)]
+                        );
                         continue;
                     }
                 };
@@ -104,7 +109,11 @@ impl AcpProcess {
             let _ = tx.send(AcpEvent::Exit { code: 0 }).await;
         });
 
-        Ok(Self { child, stdin, event_rx: rx })
+        Ok(Self {
+            child,
+            stdin,
+            event_rx: rx,
+        })
     }
 
     /// Write a user turn to the CLI via stdin (NDJSON).
@@ -153,7 +162,10 @@ fn translate_event(val: &serde_json::Value) -> Vec<AcpEvent> {
             }
             vec![AcpEvent::System {
                 subtype: subtype.to_string(),
-                session_id: val.get("session_id").and_then(|v| v.as_str()).map(String::from),
+                session_id: val
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
             }]
         }
 
@@ -169,7 +181,11 @@ fn translate_event(val: &serde_json::Value) -> Vec<AcpEvent> {
             blocks
                 .iter()
                 .map(|b| AcpEvent::ContentBlock {
-                    block_type: b.get("type").and_then(|v| v.as_str()).unwrap_or("text").to_string(),
+                    block_type: b
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("text")
+                        .to_string(),
                     text: b.get("text").and_then(|v| v.as_str()).map(String::from),
                     name: b.get("name").and_then(|v| v.as_str()).map(String::from),
                     input: b.get("input").cloned(),
@@ -180,8 +196,16 @@ fn translate_event(val: &serde_json::Value) -> Vec<AcpEvent> {
 
         "result" => {
             vec![AcpEvent::Result {
-                text: val.get("result").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                session_id: val.get("session_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                text: val
+                    .get("result")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                session_id: val
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 cost_usd: val.get("total_cost_usd").and_then(|v| v.as_f64()),
             }]
         }

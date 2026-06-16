@@ -26,8 +26,8 @@ impl Database {
             .map_err(|e| format!("Failed to create data dir: {}", e))?;
 
         let db_path = data_dir.join("zeromux.db");
-        let conn = Connection::open(&db_path)
-            .map_err(|e| format!("Failed to open database: {}", e))?;
+        let conn =
+            Connection::open(&db_path).map_err(|e| format!("Failed to open database: {}", e))?;
 
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS users (

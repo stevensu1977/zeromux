@@ -31,7 +31,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}/file/rename", post(rename_session_file))
         .route("/api/sessions/{id}/upload", post(upload_session_file))
         .route("/api/sessions/{id}/tree", get(list_session_tree))
-        .route("/api/sessions/{id}/file/download", get(download_session_file))
+        .route(
+            "/api/sessions/{id}/file/download",
+            get(download_session_file),
+        )
         .route("/api/sessions/{id}/dir", post(create_session_dir))
         .route("/api/sessions/{id}/dir", delete(delete_session_dir))
         .route("/api/sessions/{id}/dir/rename", post(rename_session_dir))
@@ -42,6 +45,20 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}/notes/{note_id}", delete(delete_note))
         .route("/api/events", get(list_events))
         .route("/api/events/{id}", delete(delete_event))
+        .route("/api/context", post(save_to_context))
+        .route("/api/sessions/{id}/record/start", post(start_recording))
+        .route("/api/sessions/{id}/record/stop", post(stop_recording))
+        .route("/api/sessions/{id}/record/status", get(recording_status))
+        .route("/api/sessions/{id}/context/files", get(list_context_files))
+        .route(
+            "/api/sessions/{id}/context/files/delete",
+            post(delete_context_files),
+        )
+        .route("/api/sessions/{id}/context/file", get(read_context_file))
+        .route(
+            "/api/sessions/{id}/context/file/download",
+            get(download_context_file),
+        )
         .route("/api/directories", get(list_directories))
         .route("/api/tmux/sessions", get(list_tmux_sessions))
         .route("/api/tmux/sessions/kill", post(kill_tmux_session))
@@ -51,10 +68,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/admin/users/{id}/approve",
             put(crate::admin::approve_user),
         )
-        .route(
-            "/api/admin/users/{id}",
-            delete(crate::admin::delete_user),
-        )
+        .route("/api/admin/users/{id}", delete(crate::admin::delete_user))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::auth_middleware,
@@ -71,26 +85,16 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     // OAuth routes (no auth required)
     let auth_routes = Router::new()
         .route("/auth/github", get(crate::oauth::github_redirect))
-        .route(
-            "/auth/github/callback",
-            get(crate::oauth::github_callback),
-        )
+        .route("/auth/github/callback", get(crate::oauth::github_callback))
         .route("/auth/login", post(legacy_login))
         .route("/auth/mode", get(auth_mode));
 
     // Events POST — uses token query param auth (like WebSocket) for hook access
-    let events_ingest = Router::new()
-        .route("/api/events", post(create_event));
+    let events_ingest = Router::new().route("/api/events", post(create_event));
 
     let ws = Router::new()
-        .route(
-            "/ws/term/{session_id}",
-            get(crate::ws_handler::ws_terminal),
-        )
-        .route(
-            "/ws/acp/{session_id}",
-            get(crate::acp::ws_handler::ws_acp),
-        );
+        .route("/ws/term/{session_id}", get(crate::ws_handler::ws_terminal))
+        .route("/ws/acp/{session_id}", get(crate::acp::ws_handler::ws_acp));
 
     Router::new()
         .merge(api)
@@ -118,12 +122,13 @@ async fn legacy_login(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let password = body["password"]
-        .as_str()
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    let password = body["password"].as_str().ok_or(StatusCode::BAD_REQUEST)?;
     let remember = body["remember"].as_bool().unwrap_or(false);
 
-    let hash = state.password_hash.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let hash = state
+        .password_hash
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     if !auth::verify_password(password, hash) {
         return Err(StatusCode::UNAUTHORIZED);
@@ -142,9 +147,7 @@ async fn legacy_login(
 }
 
 /// GET /api/me — returns current user info (works for both active and pending)
-async fn get_me(
-    user: axum::Extension<CurrentUser>,
-) -> Json<serde_json::Value> {
+async fn get_me(user: axum::Extension<CurrentUser>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "id": user.id,
         "login": user.login,
@@ -203,30 +206,51 @@ async fn list_directories(
     let base = query.path.unwrap_or_else(|| home.clone());
 
     // Security: must be under home directory
-    let base_path = std::path::Path::new(&base).canonicalize()
+    let base_path = std::path::Path::new(&base)
+        .canonicalize()
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid path: {}", e)))?;
-    let home_path = std::path::Path::new(&home).canonicalize()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Home dir error: {}", e)))?;
+    let home_path = std::path::Path::new(&home).canonicalize().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Home dir error: {}", e),
+        )
+    })?;
 
     if !base_path.starts_with(&home_path) {
-        return Err((StatusCode::FORBIDDEN, "Access denied: path must be under home directory".to_string()));
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Access denied: path must be under home directory".to_string(),
+        ));
     }
 
     let mut entries = Vec::new();
-    let read_dir = std::fs::read_dir(&base_path)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Cannot read directory: {}", e)))?;
+    let read_dir = std::fs::read_dir(&base_path).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Cannot read directory: {}", e),
+        )
+    })?;
 
     for entry in read_dir.flatten() {
         let ft = match entry.file_type() {
             Ok(ft) => ft,
             Err(_) => continue,
         };
-        if !ft.is_dir() { continue; }
+        if !ft.is_dir() {
+            continue;
+        }
 
         let name = entry.file_name().to_string_lossy().to_string();
         // Skip hidden dirs and known noisy dirs
-        if name.starts_with('.') { continue; }
-        if matches!(name.as_str(), "node_modules" | "target" | "__pycache__" | ".git") { continue; }
+        if name.starts_with('.') {
+            continue;
+        }
+        if matches!(
+            name.as_str(),
+            "node_modules" | "target" | "__pycache__" | ".git"
+        ) {
+            continue;
+        }
 
         let full = entry.path();
         let is_git = full.join(".git").exists();
@@ -239,7 +263,10 @@ async fn list_directories(
     }
 
     entries.sort_by(|a, b| {
-        a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+        a["name"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["name"].as_str().unwrap_or(""))
     });
 
     Ok(Json(serde_json::json!({
@@ -256,28 +283,30 @@ async fn list_directories(
 
 async fn list_tmux_sessions() -> Json<serde_json::Value> {
     let output = std::process::Command::new("tmux")
-        .args(["ls", "-F", "#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}"])
+        .args([
+            "ls",
+            "-F",
+            "#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_created}",
+        ])
         .output();
 
     let sessions: Vec<serde_json::Value> = match output {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter_map(|line| {
-                    let fields: Vec<&str> = line.split('\t').collect();
-                    if fields.len() >= 4 {
-                        Some(serde_json::json!({
-                            "name": fields[0],
-                            "windows": fields[1].parse::<u32>().unwrap_or(0),
-                            "attached": fields[2].parse::<u32>().unwrap_or(0),
-                            "created": fields[3].parse::<i64>().unwrap_or(0),
-                        }))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        }
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .filter_map(|line| {
+                let fields: Vec<&str> = line.split('\t').collect();
+                if fields.len() >= 4 {
+                    Some(serde_json::json!({
+                        "name": fields[0],
+                        "windows": fields[1].parse::<u32>().unwrap_or(0),
+                        "attached": fields[2].parse::<u32>().unwrap_or(0),
+                        "created": fields[3].parse::<i64>().unwrap_or(0),
+                    }))
+                } else {
+                    None
+                }
+            })
+            .collect(),
         _ => Vec::new(),
     };
 
@@ -296,32 +325,49 @@ async fn kill_tmux_session(
     let output = std::process::Command::new("tmux")
         .args(["kill-session", "-t", &req.name])
         .output()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to run tmux: {}", e)))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to run tmux: {}", e),
+            )
+        })?;
 
     if output.status.success() {
         Ok(StatusCode::OK)
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err((StatusCode::BAD_REQUEST, format!("tmux kill-session failed: {}", stderr)))
+        Err((
+            StatusCode::BAD_REQUEST,
+            format!("tmux kill-session failed: {}", stderr),
+        ))
     }
 }
 
 async fn rename_tmux_session(
     Json(req): Json<TmuxActionReq>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let new_name = req.new_name
+    let new_name = req
+        .new_name
         .ok_or((StatusCode::BAD_REQUEST, "new_name required".to_string()))?;
 
     let output = std::process::Command::new("tmux")
         .args(["rename-session", "-t", &req.name, &new_name])
         .output()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to run tmux: {}", e)))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to run tmux: {}", e),
+            )
+        })?;
 
     if output.status.success() {
         Ok(StatusCode::OK)
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        Err((StatusCode::BAD_REQUEST, format!("tmux rename failed: {}", stderr)))
+        Err((
+            StatusCode::BAD_REQUEST,
+            format!("tmux rename failed: {}", stderr),
+        ))
     }
 }
 
@@ -348,46 +394,74 @@ async fn create_session(
     let type_label = req.session_type.to_string();
     let work_dir = req.work_dir.unwrap_or_else(|| state.work_dir.clone());
 
-    let name = req.name.or_else(|| req.tmux_target.clone()).unwrap_or_else(|| {
-        // Use directory basename as part of session name
-        let dir_name = std::path::Path::new(&work_dir)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let count = state.sessions.list_sessions(None).len();
-        if dir_name.is_empty() {
-            format!("{}-{}", type_label, count + 1)
-        } else {
-            format!("{}/{}", dir_name, type_label)
-        }
-    });
+    let name = req
+        .name
+        .or_else(|| req.tmux_target.clone())
+        .unwrap_or_else(|| {
+            // Use directory basename as part of session name
+            let dir_name = std::path::Path::new(&work_dir)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let count = state.sessions.list_sessions(None).len();
+            if dir_name.is_empty() {
+                format!("{}-{}", type_label, count + 1)
+            } else {
+                format!("{}/{}", dir_name, type_label)
+            }
+        });
 
     let owner_id = user.id.clone();
 
     let id = match req.session_type {
-        crate::session_manager::SessionType::Tmux => {
-            state.sessions
-                .create_pty_session(name.clone(), &state.shell, &work_dir, state.default_cols, state.default_rows, &owner_id, req.tmux_target.as_deref())
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
-        }
-        crate::session_manager::SessionType::Claude => {
-            state.sessions
-                .create_acp_session(name.clone(), &state.claude_path, &work_dir, state.default_cols, state.default_rows, &owner_id)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
-        }
-        crate::session_manager::SessionType::Kiro => {
-            state.sessions
-                .create_kiro_session(name.clone(), &state.kiro_path, &work_dir, state.default_cols, state.default_rows, &owner_id)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
-        }
-        crate::session_manager::SessionType::Codex => {
-            state.sessions
-                .create_codex_session(name.clone(), &state.codex_path, &work_dir, state.default_cols, state.default_rows, &owner_id)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
-        }
+        crate::session_manager::SessionType::Tmux => state
+            .sessions
+            .create_pty_session(
+                name.clone(),
+                &state.shell,
+                &work_dir,
+                state.default_cols,
+                state.default_rows,
+                &owner_id,
+                req.tmux_target.as_deref(),
+            )
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?,
+        crate::session_manager::SessionType::Claude => state
+            .sessions
+            .create_acp_session(
+                name.clone(),
+                &state.claude_path,
+                &work_dir,
+                state.default_cols,
+                state.default_rows,
+                &owner_id,
+            )
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?,
+        crate::session_manager::SessionType::Kiro => state
+            .sessions
+            .create_kiro_session(
+                name.clone(),
+                &state.kiro_path,
+                &work_dir,
+                state.default_cols,
+                state.default_rows,
+                &owner_id,
+            )
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?,
+        crate::session_manager::SessionType::Codex => state
+            .sessions
+            .create_codex_session(
+                name.clone(),
+                &state.codex_path,
+                &work_dir,
+                state.default_cols,
+                state.default_rows,
+                &owner_id,
+            )
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?,
     };
 
     Ok(Json(serde_json::json!({
@@ -530,7 +604,10 @@ async fn update_session(
     if !user.is_admin() && !state.sessions.is_owner(&id, &user.id) {
         return StatusCode::FORBIDDEN;
     }
-    if state.sessions.update_session_meta(&id, req.description, req.status) {
+    if state
+        .sessions
+        .update_session_meta(&id, req.description, req.status)
+    {
         StatusCode::OK
     } else {
         StatusCode::NOT_FOUND
@@ -616,7 +693,12 @@ async fn list_session_files(
 
     collect_files(&base, &base, pattern, &mut files, 5);
 
-    files.sort_by(|a, b| a["path"].as_str().unwrap_or("").cmp(b["path"].as_str().unwrap_or("")));
+    files.sort_by(|a, b| {
+        a["path"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["path"].as_str().unwrap_or(""))
+    });
 
     Ok(Json(serde_json::json!({ "files": files })))
 }
@@ -629,7 +711,9 @@ fn collect_files(
     out: &mut Vec<serde_json::Value>,
     max_depth: u32,
 ) {
-    if max_depth == 0 { return; }
+    if max_depth == 0 {
+        return;
+    }
 
     let ext_filter = pattern.strip_prefix("*.");
     let entries = match std::fs::read_dir(dir) {
@@ -642,8 +726,15 @@ fn collect_files(
         let name = entry.file_name().to_string_lossy().to_string();
 
         // Skip hidden and noisy dirs
-        if name.starts_with('.') { continue; }
-        if matches!(name.as_str(), "node_modules" | "target" | "__pycache__" | ".git") { continue; }
+        if name.starts_with('.') {
+            continue;
+        }
+        if matches!(
+            name.as_str(),
+            "node_modules" | "target" | "__pycache__" | ".git"
+        ) {
+            continue;
+        }
 
         if path.is_dir() {
             collect_files(&path, base, pattern, out, max_depth - 1);
@@ -651,7 +742,8 @@ fn collect_files(
             let matches = if pattern == "*" {
                 true
             } else if pattern.contains(',') {
-                let exts: Vec<&str> = pattern.split(',')
+                let exts: Vec<&str> = pattern
+                    .split(',')
                     .filter_map(|p| p.trim().strip_prefix("*."))
                     .collect();
                 path.extension()
@@ -668,7 +760,8 @@ fn collect_files(
                 let rel = path.strip_prefix(base).unwrap_or(&path);
                 let meta = std::fs::metadata(&path);
                 let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-                let modified = meta.ok()
+                let modified = meta
+                    .ok()
                     .and_then(|m| m.modified().ok())
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs())
@@ -701,7 +794,9 @@ async fn list_session_tree(
     let base = resolve_base_dir(&state, &id, query.base_dir.as_deref())?;
 
     let rel_path = query.path.as_deref().unwrap_or(".");
-    let dir_path = base.join(rel_path).canonicalize()
+    let dir_path = base
+        .join(rel_path)
+        .canonicalize()
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid path: {}", e)))?;
 
     if !dir_path.starts_with(&base) {
@@ -712,8 +807,12 @@ async fn list_session_tree(
         return Err((StatusCode::BAD_REQUEST, "Not a directory".to_string()));
     }
 
-    let read_dir = std::fs::read_dir(&dir_path)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Cannot read directory: {}", e)))?;
+    let read_dir = std::fs::read_dir(&dir_path).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("Cannot read directory: {}", e),
+        )
+    })?;
 
     let mut dirs = Vec::new();
     let mut files = Vec::new();
@@ -722,9 +821,16 @@ async fn list_session_tree(
         let name = entry.file_name().to_string_lossy().to_string();
 
         // Skip hidden files
-        if name.starts_with('.') { continue; }
+        if name.starts_with('.') {
+            continue;
+        }
         // Skip noisy directories
-        if matches!(name.as_str(), "node_modules" | "target" | "__pycache__" | ".git") { continue; }
+        if matches!(
+            name.as_str(),
+            "node_modules" | "target" | "__pycache__" | ".git"
+        ) {
+            continue;
+        }
 
         let entry_path = entry.path();
         let rel = entry_path.strip_prefix(&base).unwrap_or(&entry_path);
@@ -739,7 +845,8 @@ async fn list_session_tree(
         } else if entry_path.is_file() {
             let meta = std::fs::metadata(&entry_path);
             let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-            let modified = meta.ok()
+            let modified = meta
+                .ok()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs())
@@ -757,10 +864,16 @@ async fn list_session_tree(
 
     // Sort alphabetically within each group
     dirs.sort_by(|a, b| {
-        a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+        a["name"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["name"].as_str().unwrap_or(""))
     });
     files.sort_by(|a, b| {
-        a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+        a["name"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["name"].as_str().unwrap_or(""))
     });
 
     // Directories first, then files
@@ -768,10 +881,15 @@ async fn list_session_tree(
     entries.append(&mut files);
 
     // Compute the relative path for the response
-    let response_path = dir_path.strip_prefix(&base)
+    let response_path = dir_path
+        .strip_prefix(&base)
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| ".".to_string());
-    let response_path = if response_path.is_empty() { ".".to_string() } else { response_path };
+    let response_path = if response_path.is_empty() {
+        ".".to_string()
+    } else {
+        response_path
+    };
 
     Ok(Json(serde_json::json!({
         "path": response_path,
@@ -795,7 +913,9 @@ async fn download_session_file(
     let base = resolve_base_dir(&state, &id, query.base_dir.as_deref())?;
 
     // Security: resolve and check path is under base
-    let file_path = base.join(&query.path).canonicalize()
+    let file_path = base
+        .join(&query.path)
+        .canonicalize()
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid path: {}", e)))?;
 
     if !file_path.starts_with(&base) {
@@ -806,16 +926,24 @@ async fn download_session_file(
         return Err((StatusCode::NOT_FOUND, "File not found".to_string()));
     }
 
-    let bytes = std::fs::read(&file_path)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Cannot read file: {}", e)))?;
+    let bytes = std::fs::read(&file_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Cannot read file: {}", e),
+        )
+    })?;
 
-    let filename = file_path.file_name()
+    let filename = file_path
+        .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "download".to_string());
 
     let response = Response::builder()
         .header("Content-Type", "application/octet-stream")
-        .header("Content-Disposition", format!("attachment; filename=\"{}\"", filename))
+        .header(
+            "Content-Disposition",
+            format!("attachment; filename=\"{}\"", filename),
+        )
         .body(axum::body::Body::from(bytes))
         .unwrap();
 
@@ -836,7 +964,9 @@ async fn get_session_file(
     let base = resolve_base_dir(&state, &id, query.base_dir.as_deref())?;
 
     // Security: resolve and check path is under base
-    let file_path = base.join(&query.path).canonicalize()
+    let file_path = base
+        .join(&query.path)
+        .canonicalize()
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid path: {}", e)))?;
 
     if !file_path.starts_with(&base) {
@@ -846,16 +976,24 @@ async fn get_session_file(
     let meta = std::fs::metadata(&file_path)
         .map_err(|e| (StatusCode::NOT_FOUND, format!("File not found: {}", e)))?;
 
-    let is_image = file_path.extension()
+    let is_image = file_path
+        .extension()
         .and_then(|e| e.to_str())
-        .map(|e| matches!(e.to_ascii_lowercase().as_str(),
-            "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico"))
+        .map(|e| {
+            matches!(
+                e.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico"
+            )
+        })
         .unwrap_or(false);
 
     if is_image {
         // 5MB limit for images
         if meta.len() > 5_242_880 {
-            return Err((StatusCode::BAD_REQUEST, "Image too large (max 5MB)".to_string()));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Image too large (max 5MB)".to_string(),
+            ));
         }
         let bytes = std::fs::read(&file_path)
             .map_err(|e| (StatusCode::BAD_REQUEST, format!("Cannot read file: {}", e)))?;
@@ -879,7 +1017,10 @@ async fn get_session_file(
     } else {
         // 1MB limit for text files
         if meta.len() > 1_048_576 {
-            return Err((StatusCode::BAD_REQUEST, "File too large (max 1MB)".to_string()));
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "File too large (max 1MB)".to_string(),
+            ));
         }
         match std::fs::read_to_string(&file_path) {
             Ok(content) => Ok(Json(serde_json::json!({
@@ -891,7 +1032,8 @@ async fn get_session_file(
                 // Binary file that's not an image
                 let bytes = std::fs::read(&file_path)
                     .map_err(|e| (StatusCode::BAD_REQUEST, format!("Cannot read file: {}", e)))?;
-                let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
+                let b64 =
+                    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
                 Ok(Json(serde_json::json!({
                     "path": query.path,
                     "content": b64,
@@ -912,19 +1054,29 @@ fn resolve_base_dir(
     let dir = if let Some(bd) = base_dir_override.filter(|s| !s.is_empty()) {
         bd.to_string()
     } else {
-        state.sessions.work_dir(session_id)
+        state
+            .sessions
+            .work_dir(session_id)
             .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?
     };
 
-    let base = std::path::Path::new(&dir).canonicalize()
+    let base = std::path::Path::new(&dir)
+        .canonicalize()
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid path: {}", e)))?;
 
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/ubuntu".to_string());
-    let home_path = std::path::Path::new(&home).canonicalize()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Home dir error: {}", e)))?;
+    let home_path = std::path::Path::new(&home).canonicalize().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Home dir error: {}", e),
+        )
+    })?;
 
     if !base.starts_with(&home_path) {
-        return Err((StatusCode::FORBIDDEN, "Path must be under home directory".to_string()));
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Path must be under home directory".to_string(),
+        ));
     }
 
     Ok(base)
@@ -960,7 +1112,12 @@ fn resolve_path_with_base(
                 }
             }
             std::path::Component::CurDir => {}
-            _ => return Err((StatusCode::BAD_REQUEST, "Invalid path component".to_string())),
+            _ => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "Invalid path component".to_string(),
+                ))
+            }
         }
     }
 
@@ -988,12 +1145,20 @@ async fn write_session_file(
 
     // Ensure parent directory exists
     if let Some(parent) = file_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Cannot create dir: {}", e)))?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Cannot create dir: {}", e),
+            )
+        })?;
     }
 
-    std::fs::write(&file_path, &req.content)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Write failed: {}", e)))?;
+    std::fs::write(&file_path, &req.content).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Write failed: {}", e),
+        )
+    })?;
 
     Ok(StatusCode::OK)
 }
@@ -1007,7 +1172,9 @@ async fn delete_session_file(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (base, _) = resolve_session_path(&state, &id, &query.path)?;
 
-    let file_path = base.join(&query.path).canonicalize()
+    let file_path = base
+        .join(&query.path)
+        .canonicalize()
         .map_err(|e| (StatusCode::NOT_FOUND, format!("File not found: {}", e)))?;
 
     if !file_path.starts_with(&base) {
@@ -1018,8 +1185,12 @@ async fn delete_session_file(
         return Err((StatusCode::NOT_FOUND, "Not a file".to_string()));
     }
 
-    std::fs::remove_file(&file_path)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Delete failed: {}", e)))?;
+    std::fs::remove_file(&file_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Delete failed: {}", e),
+        )
+    })?;
 
     Ok(StatusCode::OK)
 }
@@ -1040,7 +1211,9 @@ async fn rename_session_file(
     let (base, _) = resolve_session_path(&state, &id, &req.from)?;
     let (_, to_path) = resolve_session_path(&state, &id, &req.to)?;
 
-    let from_path = base.join(&req.from).canonicalize()
+    let from_path = base
+        .join(&req.from)
+        .canonicalize()
         .map_err(|e| (StatusCode::NOT_FOUND, format!("Source not found: {}", e)))?;
 
     if !from_path.starts_with(&base) {
@@ -1048,17 +1221,28 @@ async fn rename_session_file(
     }
 
     if to_path.exists() {
-        return Err((StatusCode::CONFLICT, "Destination already exists".to_string()));
+        return Err((
+            StatusCode::CONFLICT,
+            "Destination already exists".to_string(),
+        ));
     }
 
     // Ensure parent of destination exists
     if let Some(parent) = to_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Cannot create dir: {}", e)))?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Cannot create dir: {}", e),
+            )
+        })?;
     }
 
-    std::fs::rename(&from_path, &to_path)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Rename failed: {}", e)))?;
+    std::fs::rename(&from_path, &to_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Rename failed: {}", e),
+        )
+    })?;
 
     Ok(StatusCode::OK)
 }
@@ -1086,16 +1270,27 @@ async fn upload_session_file(
 
     // 10MB limit for uploads
     if bytes.len() > 10_485_760 {
-        return Err((StatusCode::BAD_REQUEST, "File too large (max 10MB)".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "File too large (max 10MB)".to_string(),
+        ));
     }
 
     if let Some(parent) = file_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Cannot create dir: {}", e)))?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Cannot create dir: {}", e),
+            )
+        })?;
     }
 
-    std::fs::write(&file_path, &bytes)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Write failed: {}", e)))?;
+    std::fs::write(&file_path, &bytes).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Write failed: {}", e),
+        )
+    })?;
 
     Ok(StatusCode::OK)
 }
@@ -1114,8 +1309,12 @@ async fn create_session_dir(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (_base, dir_path) = resolve_session_path(&state, &id, &req.path)?;
 
-    std::fs::create_dir_all(&dir_path)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Cannot create dir: {}", e)))?;
+    std::fs::create_dir_all(&dir_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Cannot create dir: {}", e),
+        )
+    })?;
 
     Ok(StatusCode::CREATED)
 }
@@ -1127,7 +1326,9 @@ async fn delete_session_dir(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let (base, _) = resolve_session_path(&state, &id, &query.path)?;
 
-    let dir_path = base.join(&query.path).canonicalize()
+    let dir_path = base
+        .join(&query.path)
+        .canonicalize()
         .map_err(|e| (StatusCode::NOT_FOUND, format!("Directory not found: {}", e)))?;
 
     if !dir_path.starts_with(&base) {
@@ -1140,11 +1341,18 @@ async fn delete_session_dir(
 
     // Don't allow deleting the work_dir root itself
     if dir_path == base {
-        return Err((StatusCode::FORBIDDEN, "Cannot delete work directory root".to_string()));
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Cannot delete work directory root".to_string(),
+        ));
     }
 
-    std::fs::remove_dir_all(&dir_path)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Delete failed: {}", e)))?;
+    std::fs::remove_dir_all(&dir_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Delete failed: {}", e),
+        )
+    })?;
 
     Ok(StatusCode::OK)
 }
@@ -1157,7 +1365,9 @@ async fn rename_session_dir(
     let (base, _) = resolve_session_path(&state, &id, &req.from)?;
     let (_, to_path) = resolve_session_path(&state, &id, &req.to)?;
 
-    let from_path = base.join(&req.from).canonicalize()
+    let from_path = base
+        .join(&req.from)
+        .canonicalize()
         .map_err(|e| (StatusCode::NOT_FOUND, format!("Source not found: {}", e)))?;
 
     if !from_path.starts_with(&base) {
@@ -1169,11 +1379,18 @@ async fn rename_session_dir(
     }
 
     if to_path.exists() {
-        return Err((StatusCode::CONFLICT, "Destination already exists".to_string()));
+        return Err((
+            StatusCode::CONFLICT,
+            "Destination already exists".to_string(),
+        ));
     }
 
-    std::fs::rename(&from_path, &to_path)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Rename failed: {}", e)))?;
+    std::fs::rename(&from_path, &to_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Rename failed: {}", e),
+        )
+    })?;
 
     Ok(StatusCode::OK)
 }
@@ -1201,9 +1418,7 @@ async fn git_log(
     // COMMIT_START marker distinguishes commit lines from graph-only lines.
     let marker = "COMMIT_START";
     let sep = "\x01"; // ASCII SOH as field separator — won't appear in commit data
-    let format_str = format!(
-        "{marker}{sep}%H{sep}%h{sep}%an{sep}%aI{sep}%s{sep}%D"
-    );
+    let format_str = format!("{marker}{sep}%H{sep}%h{sep}%an{sep}%aI{sep}%s{sep}%D");
 
     let output = std::process::Command::new("git")
         .args([
@@ -1215,11 +1430,19 @@ async fn git_log(
         ])
         .current_dir(&work_dir)
         .output()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("git log failed: {}", e)))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("git log failed: {}", e),
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err((StatusCode::BAD_REQUEST, format!("git log error: {}", stderr)));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("git log error: {}", stderr),
+        ));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1262,7 +1485,12 @@ async fn git_log(
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<usize>().unwrap_or(0))
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<usize>()
+                .unwrap_or(0)
+        })
         .unwrap_or(0);
 
     Ok(Json(serde_json::json!({
@@ -1295,10 +1523,20 @@ async fn git_show(
     let sep = "---FIELD---";
     let format_str = format!("%H{sep}%h{sep}%an{sep}%aI{sep}%s{sep}%b");
     let meta_output = std::process::Command::new("git")
-        .args(["log", "-1", &format!("--format={}", format_str), &query.commit])
+        .args([
+            "log",
+            "-1",
+            &format!("--format={}", format_str),
+            &query.commit,
+        ])
         .current_dir(&work_dir)
         .output()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("git show failed: {}", e)))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("git show failed: {}", e),
+            )
+        })?;
 
     if !meta_output.status.success() {
         return Err((StatusCode::NOT_FOUND, "Commit not found".to_string()));
@@ -1324,7 +1562,12 @@ async fn git_show(
         .args(["show", "--format=", "--patch", &query.commit])
         .current_dir(&work_dir)
         .output()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("git show failed: {}", e)))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("git show failed: {}", e),
+            )
+        })?;
 
     let diff = String::from_utf8_lossy(&diff_output.stdout).to_string();
 
@@ -1381,13 +1624,18 @@ async fn create_event(
         return Err((StatusCode::UNAUTHORIZED, "Unauthorized".to_string()));
     }
 
-    let event = state.events.create(req)
+    let event = state
+        .events
+        .create(req)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    Ok((StatusCode::CREATED, Json(serde_json::json!({
-        "id": event.id,
-        "timestamp": event.timestamp,
-    }))))
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "id": event.id,
+            "timestamp": event.timestamp,
+        })),
+    ))
 }
 
 /// GET /api/events — list events (requires auth middleware)
@@ -1395,7 +1643,9 @@ async fn list_events(
     State(state): State<Arc<AppState>>,
     Query(query): Query<crate::events::EventsQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let events = state.events.list(&query)
+    let events = state
+        .events
+        .list(&query)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     Ok(Json(serde_json::json!({
@@ -1409,7 +1659,9 @@ async fn delete_event(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let deleted = state.events.delete_one(&id)
+    let deleted = state
+        .events
+        .delete_one(&id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     if deleted {
@@ -1417,4 +1669,469 @@ async fn delete_event(
     } else {
         Err((StatusCode::NOT_FOUND, "Event not found".to_string()))
     }
+}
+
+// ── Context Save ──
+
+#[derive(serde::Deserialize)]
+struct SaveContextReq {
+    work_dir: String,
+    content: String,
+    title: Option<String>,
+}
+
+async fn save_to_context(
+    Json(req): Json<SaveContextReq>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let work_dir = std::path::Path::new(&req.work_dir);
+    if !work_dir.exists() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "work_dir does not exist".to_string(),
+        ));
+    }
+
+    // Security: must be under HOME
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/ubuntu".to_string());
+    let home_path = std::path::Path::new(&home).canonicalize().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Home dir error: {}", e),
+        )
+    })?;
+    let work_canonical = work_dir
+        .canonicalize()
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid path: {}", e)))?;
+    if !work_canonical.starts_with(&home_path) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Path must be under home directory".to_string(),
+        ));
+    }
+
+    // Create .zeromux/context/ directory
+    let context_dir = work_canonical.join(".zeromux").join("context");
+    std::fs::create_dir_all(&context_dir).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Cannot create context dir: {}", e),
+        )
+    })?;
+
+    // Today's file
+    let today = {
+        let d = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let secs = d.as_secs();
+        let days = secs / 86400;
+        let mut y = 1970i64;
+        let mut remaining = days as i64;
+        loop {
+            let diy = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                366
+            } else {
+                365
+            };
+            if remaining < diy {
+                break;
+            }
+            remaining -= diy;
+            y += 1;
+        }
+        let months: [i64; 12] = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+            [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        } else {
+            [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        };
+        let mut mo = 1;
+        for &md in &months {
+            if remaining < md {
+                break;
+            }
+            remaining -= md;
+            mo += 1;
+        }
+        let day = remaining + 1;
+        let time_secs = secs % 86400;
+        let h = time_secs / 3600;
+        let m = (time_secs % 3600) / 60;
+        (
+            format!("{:04}-{:02}-{:02}", y, mo, day),
+            format!("{:02}:{:02}", h, m),
+        )
+    };
+
+    let file_path = context_dir.join(format!("{}.md", today.0));
+    let title = req.title.unwrap_or_else(|| "Context".to_string());
+
+    // Append to today's file
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file_path)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Cannot open file: {}", e),
+            )
+        })?;
+
+    write!(
+        file,
+        "\n## {} ({})\n\n{}\n\n---\n",
+        title,
+        today.1,
+        req.content.trim()
+    )
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Write failed: {}", e),
+        )
+    })?;
+
+    Ok(Json(serde_json::json!({
+        "file": file_path.to_string_lossy(),
+        "date": today.0,
+    })))
+}
+
+// ── Recording (tmux pipe-pane) ──
+
+async fn start_recording(
+    State(state): State<Arc<AppState>>,
+    user: axum::Extension<CurrentUser>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_session_access(&state, &id, &user)?;
+
+    let recording = state
+        .sessions
+        .start_recording(&id)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let entry = match state.recordings.start(crate::recordings::StartRecording {
+        session_id: &id,
+        session_name: &recording.session_name,
+        tmux_name: &recording.tmux_name,
+        work_dir: &recording.work_dir,
+        file_path: &recording.file_path,
+    }) {
+        Ok(entry) => entry,
+        Err(e) => {
+            let _ = state.sessions.stop_recording(&id);
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, e));
+        }
+    };
+
+    Ok(Json(serde_json::json!({
+        "recording": true,
+        "file": recording.file_path.to_string_lossy(),
+        "record": entry,
+    })))
+}
+
+async fn stop_recording(
+    State(state): State<Arc<AppState>>,
+    user: axum::Extension<CurrentUser>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_session_access(&state, &id, &user)?;
+
+    let recording = state
+        .sessions
+        .stop_recording(&id)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    if let Some(ref recording) = recording {
+        state
+            .recordings
+            .finish_by_path(&recording.file_path)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    }
+
+    Ok(Json(serde_json::json!({
+        "recording": false,
+        "file": recording.as_ref().map(|r| r.file_path.to_string_lossy().to_string()),
+        "lines": recording.as_ref().map(|r| r.new_line_count).unwrap_or(0),
+    })))
+}
+
+async fn recording_status(
+    State(state): State<Arc<AppState>>,
+    user: axum::Extension<CurrentUser>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_session_access(&state, &id, &user)?;
+
+    let status = state
+        .sessions
+        .recording_status(&id)
+        .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "recording": status.is_some(),
+        "file": status.map(|p| p.to_string_lossy().to_string()),
+    })))
+}
+
+/// GET /api/sessions/{id}/context/files — list context files in .zeromux/context/
+async fn list_context_files(
+    State(state): State<Arc<AppState>>,
+    user: axum::Extension<CurrentUser>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_session_access(&state, &id, &user)?;
+
+    let work_dir = state
+        .sessions
+        .work_dir(&id)
+        .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
+
+    let context_dir = std::path::Path::new(&work_dir)
+        .join(".zeromux")
+        .join("context");
+
+    let files = state
+        .recordings
+        .sync_and_list(&work_dir, &context_dir)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(serde_json::json!({ "files": files })))
+}
+
+/// POST /api/sessions/{id}/context/files/delete — batch delete context files
+async fn delete_context_files(
+    State(state): State<Arc<AppState>>,
+    user: axum::Extension<CurrentUser>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_session_access(&state, &id, &user)?;
+
+    let names = body["names"]
+        .as_array()
+        .ok_or((StatusCode::BAD_REQUEST, "Missing 'names' array".to_string()))?;
+
+    let work_dir = state
+        .sessions
+        .work_dir(&id)
+        .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
+
+    let context_dir = std::path::Path::new(&work_dir)
+        .join(".zeromux")
+        .join("context");
+    let mut deleted = 0u32;
+    let mut deleted_names = Vec::new();
+
+    for name_val in names {
+        let name = name_val.as_str().unwrap_or("");
+        if name.is_empty() || name.contains("..") || name.contains('/') || name.contains('\\') {
+            continue;
+        }
+        let file_path = context_dir.join(name);
+        if file_path.exists() && file_path.starts_with(&context_dir) {
+            if std::fs::remove_file(&file_path).is_ok() {
+                deleted += 1;
+                deleted_names.push(name.to_string());
+            }
+        }
+    }
+    state
+        .recordings
+        .delete_by_names(&work_dir, &deleted_names)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(serde_json::json!({ "deleted": deleted })))
+}
+
+/// GET /api/sessions/{id}/context/file?name=xxx — read context file content
+async fn read_context_file(
+    State(state): State<Arc<AppState>>,
+    user: axum::Extension<CurrentUser>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_session_access(&state, &id, &user)?;
+
+    let name = params
+        .get("name")
+        .ok_or((StatusCode::BAD_REQUEST, "Missing 'name' param".to_string()))?;
+
+    if name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err((StatusCode::BAD_REQUEST, "Invalid filename".to_string()));
+    }
+
+    let work_dir = state
+        .sessions
+        .work_dir(&id)
+        .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
+
+    let file_path = std::path::Path::new(&work_dir)
+        .join(".zeromux")
+        .join("context")
+        .join(name);
+
+    if !file_path.exists() {
+        return Err((StatusCode::NOT_FOUND, "File not found".to_string()));
+    }
+
+    let raw = std::fs::read_to_string(&file_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Read failed: {}", e),
+        )
+    })?;
+    let content = strip_ansi(&raw);
+
+    Ok(Json(serde_json::json!({
+        "name": name,
+        "content": content,
+        "size": content.len(),
+    })))
+}
+
+/// GET /api/sessions/{id}/context/file/download?name=xxx — download raw context file
+async fn download_context_file(
+    State(state): State<Arc<AppState>>,
+    user: axum::Extension<CurrentUser>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Response, (StatusCode, String)> {
+    require_session_access(&state, &id, &user)?;
+
+    let name = params
+        .get("name")
+        .ok_or((StatusCode::BAD_REQUEST, "Missing 'name' param".to_string()))?;
+
+    if name.contains("..") || name.contains('/') || name.contains('\\') {
+        return Err((StatusCode::BAD_REQUEST, "Invalid filename".to_string()));
+    }
+
+    let work_dir = state
+        .sessions
+        .work_dir(&id)
+        .ok_or((StatusCode::NOT_FOUND, "Session not found".to_string()))?;
+
+    let file_path = std::path::Path::new(&work_dir)
+        .join(".zeromux")
+        .join("context")
+        .join(name);
+
+    if !file_path.exists() {
+        return Err((StatusCode::NOT_FOUND, "File not found".to_string()));
+    }
+
+    let content = std::fs::read(&file_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Read failed: {}", e),
+        )
+    })?;
+
+    let disposition = format!("attachment; filename=\"{}\"", name);
+    Ok((
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; charset=utf-8",
+            ),
+            (axum::http::header::CONTENT_DISPOSITION, &disposition),
+        ],
+        content,
+    )
+        .into_response())
+}
+
+fn require_session_access(
+    state: &AppState,
+    id: &str,
+    user: &CurrentUser,
+) -> Result<(), (StatusCode, String)> {
+    if state.sessions.work_dir(id).is_none() {
+        return Err((StatusCode::NOT_FOUND, "Session not found".to_string()));
+    }
+    if !user.is_admin() && !state.sessions.is_owner(id, &user.id) {
+        return Err((StatusCode::FORBIDDEN, "Forbidden".to_string()));
+    }
+    Ok(())
+}
+
+/// Strip ANSI escape sequences from text (CSI, OSC, simple escapes, \r)
+fn strip_ansi(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let len = bytes.len();
+    let mut out = Vec::with_capacity(len);
+    let mut i = 0;
+
+    while i < len {
+        if bytes[i] == 0x1b {
+            i += 1;
+            if i >= len {
+                break;
+            }
+            match bytes[i] {
+                // CSI: ESC [ ... (params/intermediates) final byte
+                b'[' => {
+                    i += 1;
+                    while i < len && bytes[i] >= 0x20 && bytes[i] <= 0x3f {
+                        i += 1; // parameter bytes
+                    }
+                    while i < len && bytes[i] >= 0x20 && bytes[i] <= 0x2f {
+                        i += 1; // intermediate bytes
+                    }
+                    if i < len {
+                        i += 1;
+                    } // final byte
+                }
+                // OSC: ESC ] ... (until BEL or ST)
+                b']' => {
+                    i += 1;
+                    while i < len {
+                        if bytes[i] == 0x07 {
+                            i += 1;
+                            break;
+                        } // BEL
+                        if bytes[i] == 0x1b && i + 1 < len && bytes[i + 1] == b'\\' {
+                            i += 2;
+                            break; // ST
+                        }
+                        i += 1;
+                    }
+                }
+                // Two-byte sequences: ESC ( ESC ) ESC = ESC > etc.
+                b'(' | b')' | b'*' | b'+' | b'=' | b'>' => {
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        } else if bytes[i] == b'\r' {
+            i += 1;
+        } else if bytes[i] < 0x20 && bytes[i] != b'\n' && bytes[i] != b'\t' {
+            // Strip other control chars (BEL, SI, SO, etc.) but keep newline and tab
+            i += 1;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+
+    // Collapse runs of 3+ newlines into 2
+    let text = String::from_utf8_lossy(&out);
+    let mut result = String::with_capacity(text.len());
+    let mut newline_count = 0u32;
+    for ch in text.chars() {
+        if ch == '\n' {
+            newline_count += 1;
+            if newline_count <= 2 {
+                result.push(ch);
+            }
+        } else {
+            newline_count = 0;
+            result.push(ch);
+        }
+    }
+    result
 }

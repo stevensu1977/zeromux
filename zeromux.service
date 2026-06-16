@@ -1,0 +1,29 @@
+[Unit]
+Description=ZeroMux - web-based tmux / agent orchestration control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+
+# Run from the working tree so dev updates are picked up by a rebuild + restart.
+WorkingDirectory=/home/ubuntu/zeromux
+
+# Spawned sessions need the interactive PATH (tmux, claude, codex, kiro-cli, node).
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.local/bin:/home/ubuntu/.nvm/versions/node/v22.22.0/bin:/home/ubuntu/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+
+# Secrets (ZEROMUX_PASSWORD, etc.) live here, kept out of git and the unit file.
+EnvironmentFile=/home/ubuntu/zeromux/.env
+
+ExecStart=/home/ubuntu/zeromux/target/release/zeromux --port 8400 --host 127.0.0.1
+
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

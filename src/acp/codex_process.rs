@@ -20,10 +20,12 @@ impl CodexProcess {
         let work_dir = work_dir.to_string();
 
         // Send initial system event
-        let _ = event_tx.send(AcpEvent::System {
-            subtype: "session".to_string(),
-            session_id: Some("codex".to_string()),
-        }).await;
+        let _ = event_tx
+            .send(AcpEvent::System {
+                subtype: "session".to_string(),
+                session_id: Some("codex".to_string()),
+            })
+            .await;
 
         // Background task: receives prompts, spawns codex exec for each
         tokio::spawn(async move {
@@ -34,7 +36,8 @@ impl CodexProcess {
     }
 
     pub fn send_prompt(&mut self, text: &str) -> Result<(), std::io::Error> {
-        self.cmd_tx.try_send(text.to_string())
+        self.cmd_tx
+            .try_send(text.to_string())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e.to_string()))
     }
 
@@ -57,15 +60,16 @@ async fn run_codex_loop(
             let work_dir = work_dir.clone();
             let event_tx = event_tx.clone();
             let prompt = prompt.clone();
-            move || {
-                run_single_codex(&codex_path, &work_dir, &prompt, &event_tx)
-            }
-        }).await;
+            move || run_single_codex(&codex_path, &work_dir, &prompt, &event_tx)
+        })
+        .await;
 
         if let Err(e) = result {
-            let _ = event_tx.send(AcpEvent::Error {
-                message: format!("Codex execution failed: {}", e),
-            }).await;
+            let _ = event_tx
+                .send(AcpEvent::Error {
+                    message: format!("Codex execution failed: {}", e),
+                })
+                .await;
         }
     }
 
@@ -178,7 +182,12 @@ fn translate_codex_event(raw: &serde_json::Value) -> Vec<AcpEvent> {
                     let command = item["command"].as_str().unwrap_or("").to_string();
                     vec![AcpEvent::ContentBlock {
                         block_type: "tool_result".to_string(),
-                        text: Some(format!("$ {}\n{}\n[exit: {}]", command, output.trim(), exit_code)),
+                        text: Some(format!(
+                            "$ {}\n{}\n[exit: {}]",
+                            command,
+                            output.trim(),
+                            exit_code
+                        )),
                         name: Some("shell".to_string()),
                         input: None,
                         streaming: Some(false),

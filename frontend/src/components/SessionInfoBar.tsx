@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { SessionInfo, SessionMetaStatus, NoteEntry } from '../lib/api'
 import { updateSession, listNotes, createNote, deleteNote } from '../lib/api'
-import { ChevronDown, ChevronRight, FileText, StickyNote, GitBranch, X, ClipboardPaste, Activity } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileText, StickyNote, GitBranch, X, ClipboardPaste, Activity, Disc } from 'lucide-react'
 import ClipboardUpload from './ClipboardUpload'
 
 interface Props {
@@ -10,9 +10,11 @@ interface Props {
   onToggleFiles: () => void
   onToggleGit: () => void
   onToggleEvents: () => void
+  onToggleContext: () => void
   showFiles: boolean
   showGit: boolean
   showEvents: boolean
+  showContext: boolean
   onOpenSidebar?: () => void
 }
 
@@ -28,7 +30,7 @@ export function StatusDot({ status }: { status: SessionMetaStatus }) {
   return <span className={`inline-block w-2 h-2 rounded-full ${opt?.color || 'bg-gray-400'} shrink-0`} />
 }
 
-export default function SessionInfoBar({ session, onUpdate, onToggleFiles, onToggleGit, onToggleEvents, showFiles, showGit, showEvents, onOpenSidebar }: Props) {
+export default function SessionInfoBar({ session, onUpdate, onToggleFiles, onToggleGit, onToggleEvents, onToggleContext, showFiles, showGit, showEvents, showContext, onOpenSidebar }: Props) {
   const [expanded, setExpanded] = useState(false)
   const [desc, setDesc] = useState(session.description)
   const [notes, setNotes] = useState<NoteEntry[]>([])
@@ -164,6 +166,19 @@ export default function SessionInfoBar({ session, onUpdate, onToggleFiles, onTog
           >
             <Activity size={14} />
           </button>
+          {(session.type === 'tmux') && (
+            <button
+              onClick={onToggleContext}
+              className={`p-1 rounded transition-colors ${
+                showContext
+                  ? 'text-[var(--accent-blue)] bg-[var(--bg-primary)]'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+              title="Context recorder"
+            >
+              <Disc size={14} />
+            </button>
+          )}
           {(session.type === 'tmux') && (
             <button
               onClick={() => setShowClipboard(!showClipboard)}

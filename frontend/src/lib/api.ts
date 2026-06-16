@@ -425,6 +425,15 @@ export async function deleteEvent(id: string): Promise<void> {
   if (!res.ok) throw new Error(await res.text())
 }
 
+export async function saveToContext(workDir: string, content: string, title?: string): Promise<{ file: string; date: string }> {
+  const res = await api('/api/context', {
+    method: 'POST',
+    body: JSON.stringify({ work_dir: workDir, content, title }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
 export function wsUrl(path: string): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
   const token = getToken()

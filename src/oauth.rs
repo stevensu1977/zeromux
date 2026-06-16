@@ -15,10 +15,10 @@ pub struct CallbackQuery {
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct JwtClaims {
-    pub sub: String,        // user id
-    pub role: String,       // "admin" | "member"
-    pub status: String,     // "active" | "pending"
-    pub login: String,      // github username
+    pub sub: String,    // user id
+    pub role: String,   // "admin" | "member"
+    pub status: String, // "active" | "pending"
+    pub login: String,  // github username
     pub avatar: Option<String>,
     pub exp: usize,
 }
@@ -36,12 +36,19 @@ pub async fn github_redirect(
     let client_id = match &state.github_client_id {
         Some(id) => id,
         None => {
-            return (axum::http::StatusCode::SERVICE_UNAVAILABLE, "OAuth not configured")
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "OAuth not configured",
+            )
                 .into_response()
         }
     };
 
-    let remember_flag = if query.remember.unwrap_or(false) { "1" } else { "0" };
+    let remember_flag = if query.remember.unwrap_or(false) {
+        "1"
+    } else {
+        "0"
+    };
     let callback_url = format!("{}/auth/github/callback", state.external_url);
     let url = format!(
         "https://github.com/login/oauth/authorize?client_id={}&redirect_uri={}&scope=read:user&state={}",
@@ -60,7 +67,10 @@ pub async fn github_callback(
     let (client_id, client_secret) = match (&state.github_client_id, &state.github_client_secret) {
         (Some(id), Some(secret)) => (id, secret),
         _ => {
-            return (axum::http::StatusCode::SERVICE_UNAVAILABLE, "OAuth not configured")
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "OAuth not configured",
+            )
                 .into_response()
         }
     };
@@ -70,7 +80,10 @@ pub async fn github_callback(
         Ok(t) => t,
         Err(e) => {
             tracing::error!("OAuth token exchange failed: {}", e);
-            return (axum::http::StatusCode::BAD_GATEWAY, "OAuth token exchange failed")
+            return (
+                axum::http::StatusCode::BAD_GATEWAY,
+                "OAuth token exchange failed",
+            )
                 .into_response();
         }
     };
@@ -80,7 +93,10 @@ pub async fn github_callback(
         Ok(u) => u,
         Err(e) => {
             tracing::error!("GitHub user fetch failed: {}", e);
-            return (axum::http::StatusCode::BAD_GATEWAY, "Failed to fetch GitHub user")
+            return (
+                axum::http::StatusCode::BAD_GATEWAY,
+                "Failed to fetch GitHub user",
+            )
                 .into_response();
         }
     };
@@ -89,7 +105,10 @@ pub async fn github_callback(
     let db = match &state.db {
         Some(db) => db,
         None => {
-            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Database not initialized")
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Database not initialized",
+            )
                 .into_response()
         }
     };
@@ -104,7 +123,10 @@ pub async fn github_callback(
         Ok(u) => u,
         Err(e) => {
             tracing::error!("User upsert failed: {}", e);
-            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "User creation failed")
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "User creation failed",
+            )
                 .into_response();
         }
     };
@@ -122,7 +144,10 @@ pub async fn github_callback(
         Ok(t) => t,
         Err(e) => {
             tracing::error!("JWT signing failed: {}", e);
-            return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "Token signing failed")
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Token signing failed",
+            )
                 .into_response();
         }
     };
@@ -143,7 +168,11 @@ pub async fn github_callback(
 }
 
 pub fn issue_jwt(user: &crate::db::User, secret: &str, remember: bool) -> Result<String, String> {
-    let ttl = if remember { 30 * 24 * 3600 } else { 7 * 24 * 3600 };
+    let ttl = if remember {
+        30 * 24 * 3600
+    } else {
+        7 * 24 * 3600
+    };
     let exp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

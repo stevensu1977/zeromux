@@ -11,9 +11,10 @@ import SessionInfoBar from './components/SessionInfoBar'
 import FileBrowser from './components/FileBrowser'
 import GitViewer from './components/GitViewer'
 import AgentDashboard from './components/AgentDashboard'
+import ContextRecorder from './components/ContextRecorder'
 
 type AuthState = 'loading' | 'unauthenticated' | 'pending' | 'active'
-type OverlayView = 'none' | 'files' | 'git' | 'events'
+type OverlayView = 'none' | 'files' | 'git' | 'events' | 'context'
 
 export default function App() {
   const [authState, setAuthState] = useState<AuthState>('loading')
@@ -104,7 +105,7 @@ export default function App() {
     setSessions(prev => prev.map(s => s.id === id ? { ...s, ...updated } : s))
   }, [])
 
-  const toggleOverlay = useCallback((id: string, view: 'files' | 'git' | 'events') => {
+  const toggleOverlay = useCallback((id: string, view: 'files' | 'git' | 'events' | 'context') => {
     setOverlay(prev => ({
       ...prev,
       [id]: prev[id] === view ? 'none' : view,
@@ -151,9 +152,11 @@ export default function App() {
             onToggleFiles={() => toggleOverlay(activeSession.id, 'files')}
             onToggleGit={() => toggleOverlay(activeSession.id, 'git')}
             onToggleEvents={() => toggleOverlay(activeSession.id, 'events')}
+            onToggleContext={() => toggleOverlay(activeSession.id, 'context')}
             showFiles={(overlay[activeSession.id] || 'none') === 'files'}
             showGit={(overlay[activeSession.id] || 'none') === 'git'}
             showEvents={(overlay[activeSession.id] || 'none') === 'events'}
+            showContext={(overlay[activeSession.id] || 'none') === 'context'}
             onOpenSidebar={isMobile && !sidebarOpen ? () => setSidebarOpen(true) : undefined}
           />
         )}
@@ -187,6 +190,7 @@ export default function App() {
                 {view === 'files' && <FileBrowser sessionId={s.id} sessionType={s.type} />}
                 {view === 'git' && <GitViewer sessionId={s.id} />}
                 {view === 'events' && <AgentDashboard sessionId={s.id} />}
+                {view === 'context' && <ContextRecorder sessionId={s.id} />}
               </div>
             )
           })}
