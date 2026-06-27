@@ -15,6 +15,13 @@ WorkingDirectory=/home/ubuntu/zeromux
 Environment=HOME=/home/ubuntu
 Environment=PATH=/home/ubuntu/.local/bin:/home/ubuntu/.nvm/versions/node/v22.22.0/bin:/home/ubuntu/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
 
+# Claude Code -> Bedrock. systemd does not read ~/.bashrc, so spawned `claude`
+# processes (ACP) need these explicitly or they fall back to Anthropic account
+# login and report "Not logged in · Please run /login". AWS creds come from the
+# instance role (IMDS).
+Environment=CLAUDE_CODE_USE_BEDROCK=1
+Environment=AWS_REGION=us-east-1
+
 # Secrets (ZEROMUX_PASSWORD, etc.) live here, kept out of git and the unit file.
 EnvironmentFile=/home/ubuntu/zeromux/.env
 
