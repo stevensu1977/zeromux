@@ -8,6 +8,15 @@ import type { Theme } from '../lib/theme'
 import { b64encode, b64decode } from '../lib/base64'
 import { GitBranch, Folder, Circle } from 'lucide-react'
 
+// A hidden (display:none) terminal makes FitAddon propose a collapsed size.
+// Treat anything below a sane minimum as "not laid out yet" and skip the resize
+// so we never shrink the shared tmux window and truncate other clients.
+const MIN_COLS = 20
+const MIN_ROWS = 5
+function isValidDims(cols?: number, rows?: number): boolean {
+  return !!cols && !!rows && cols >= MIN_COLS && rows >= MIN_ROWS
+}
+
 const THEMES = {
   dark: {
     background: '#0d1117',
@@ -151,7 +160,11 @@ export default function TerminalView({ sessionId, active, theme }: Props) {
       const fit = fitRef.current
       if (fit) {
         const dims = fit.proposeDimensions()
-        if (dims) {
+        // Only send a resize when the container is actually laid out. A hidden
+        // (display:none) terminal proposes a tiny size (~10x6) that would shrink
+        // the shared tmux window and truncate other clients. The resize will be
+        // sent later by the `active` effect once this terminal becomes visible.
+        if (dims && isValidDims(dims.cols, dims.rows)) {
           ws.send(JSON.stringify({ type: 'resize', cols: dims.cols, rows: dims.rows }))
         }
       }
@@ -177,6 +190,10 @@ export default function TerminalView({ sessionId, active, theme }: Props) {
     const term = termRef.current
     const ws = wsRef.current
     if (!fit || !term) return
+    // Skip while the container is hidden/unlaid-out: FitAddon would collapse the
+    // terminal to a tiny size and we'd push that to the shared tmux window.
+    const dims = fit.proposeDimensions()
+    if (!dims || !isValidDims(dims.cols, dims.rows)) return
     fit.fit()
     if (ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))

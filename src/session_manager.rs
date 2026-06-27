@@ -303,6 +303,23 @@ impl SessionManager {
                 let _ = std::process::Command::new("tmux")
                     .args(["set-option", "-t", &tmux_name, "exit-empty", "off"])
                     .output();
+                // Size the window to the LARGEST attached client rather than the
+                // smallest (tmux 3.x default is "latest", which lets a web client
+                // and an ssh client attached to the same session fight over the
+                // window size and truncate each other's output). With "largest"
+                // the big client renders fully; smaller clients scroll to view.
+                let _ = std::process::Command::new("tmux")
+                    .args(["set-option", "-t", &tmux_name, "window-size", "largest"])
+                    .output();
+                let _ = std::process::Command::new("tmux")
+                    .args([
+                        "set-window-option",
+                        "-t",
+                        &tmux_name,
+                        "aggressive-resize",
+                        "on",
+                    ])
+                    .output();
             }
             cmd = "tmux".to_string();
             args_owned = vec!["attach".to_string(), "-t".to_string(), tmux_name.clone()];
