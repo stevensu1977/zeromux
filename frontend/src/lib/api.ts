@@ -49,6 +49,18 @@ export async function getSessionStatus(id: string): Promise<SessionStatus> {
   return res.json()
 }
 
+export type TmuxAction =
+  | 'new-window' | 'next-window' | 'prev-window' | 'last-window'
+  | 'split-h' | 'split-v' | 'next-pane' | 'kill-pane'
+
+export async function tmuxAction(id: string, action: TmuxAction): Promise<void> {
+  const res = await api(`/api/sessions/${id}/tmux`, {
+    method: 'POST',
+    body: JSON.stringify({ action }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+}
+
 function getToken(): string {
   return localStorage.getItem('zeromux_token') || ''
 }

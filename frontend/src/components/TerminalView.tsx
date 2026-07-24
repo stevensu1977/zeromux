@@ -2,11 +2,14 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
-import { wsUrl, getSessionStatus } from '../lib/api'
-import type { SessionStatus } from '../lib/api'
+import { wsUrl, getSessionStatus, tmuxAction } from '../lib/api'
+import type { SessionStatus, TmuxAction } from '../lib/api'
 import type { Theme } from '../lib/theme'
 import { b64encode, b64decode } from '../lib/base64'
-import { GitBranch, Folder, Circle } from 'lucide-react'
+import {
+  GitBranch, Folder, Circle,
+  Plus, ChevronLeft, ChevronRight, Columns2, Rows2, LayoutGrid, X,
+} from 'lucide-react'
 
 // A hidden (display:none) terminal makes FitAddon propose a collapsed size.
 // Treat anything below a sane minimum as "not laid out yet" and skip the resize
@@ -70,6 +73,16 @@ interface Props {
   theme: Theme
 }
 
+const TMUX_BUTTONS: Array<{ action: TmuxAction; title: string; Icon: typeof Plus }> = [
+  { action: 'new-window', title: 'New window', Icon: Plus },
+  { action: 'prev-window', title: 'Previous window', Icon: ChevronLeft },
+  { action: 'next-window', title: 'Next window', Icon: ChevronRight },
+  { action: 'split-h', title: 'Split left/right', Icon: Columns2 },
+  { action: 'split-v', title: 'Split top/bottom', Icon: Rows2 },
+  { action: 'next-pane', title: 'Focus next pane', Icon: LayoutGrid },
+  { action: 'kill-pane', title: 'Close pane', Icon: X },
+]
+
 export default function TerminalView({ sessionId, active, theme }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -77,6 +90,15 @@ export default function TerminalView({ sessionId, active, theme }: Props) {
   const wsRef = useRef<WebSocket | null>(null)
   const initRef = useRef(false)
   const [status, setStatus] = useState<SessionStatus | null>(null)
+  const [tmuxError, setTmuxError] = useState<string | null>(null)
+
+  const runTmuxAction = useCallback((action: TmuxAction) => {
+    tmuxAction(sessionId, action)
+      .then(() => setTmuxError(null))
+      .catch(e => setTmuxError(String(e.message || e)))
+    // Keep keystrokes flowing to the terminal after a button tap
+    termRef.current?.focus()
+  }, [sessionId])
 
   // Fetch status
   useEffect(() => {
@@ -243,6 +265,23 @@ export default function TerminalView({ sessionId, active, theme }: Props) {
         ) : (
           <span className="text-xs text-[var(--text-muted)]">Loading...</span>
         )}
+        <div className="flex items-center gap-1 ml-auto">
+          {tmuxError && (
+            <span className="text-xs text-[var(--accent-red)] truncate max-w-[240px]" title={tmuxError}>
+              {tmuxError}
+            </span>
+          )}
+          {TMUX_BUTTONS.map(({ action, title, Icon }) => (
+            <button
+              key={action}
+              title={title}
+              onClick={() => runTmuxAction(action)}
+              className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-bright)] hover:bg-[var(--bg-hover)] transition-colors"
+            >
+              <Icon size={14} />
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   )

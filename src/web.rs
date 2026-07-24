@@ -23,6 +23,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}", delete(delete_session))
         .route("/api/sessions/{id}", patch(update_session))
         .route("/api/sessions/{id}/status", get(session_status))
+        .route("/api/sessions/{id}/tmux", post(tmux_action))
         .route("/api/sessions/{id}/logs", get(session_logs))
         .route("/api/sessions/{id}/files", get(list_session_files))
         .route("/api/sessions/{id}/file", get(get_session_file))
@@ -2041,6 +2042,84 @@ async fn download_context_file(
         content,
     )
         .into_response())
+}
+
+#[derive(serde::Deserialize)]
+struct TmuxWindowActionReq {
+    action: String,
+}
+
+/// Run a whitelisted tmux window/pane action against the session's tmux
+/// session. Lets the web UI offer window/split buttons without the client
+/// having to emit prefix-key sequences (which depend on the user's tmux
+/// config and the state of the pane's foreground program).
+async fn tmux_action(
+    State(state): State<Arc<AppState>>,
+    user: axum::Extension<CurrentUser>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(req): Json<TmuxWindowActionReq>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_session_access(&state, &id, &user)?;
+
+    let tmux_name = state.sessions.tmux_session_name(&id).ok_or((
+        StatusCode::BAD_REQUEST,
+        "Session has no tmux session".to_string(),
+    ))?;
+
+    // Killing the last pane of the last window destroys the whole tmux session
+    // (and every agent in it) — refuse instead.
+    if req.action == "kill-pane" {
+        let counts = std::process::Command::new("tmux")
+            .args([
+                "display-message",
+                "-p",
+                "-t",
+                &tmux_name,
+                "-F",
+                "#{window_panes} #{session_windows}",
+            ])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        if counts.as_deref() == Some("1 1") {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Refusing to kill the last pane — it would destroy the tmux session".to_string(),
+            ));
+        }
+    }
+
+    let pane_target = format!("{}:.+", tmux_name);
+    // Open new windows/splits in the active pane's directory (usually the
+    // project dir) rather than the server's cwd. tmux expands the format in -c.
+    let args: Vec<&str> = match req.action.as_str() {
+        "new-window" => vec!["new-window", "-t", &tmux_name, "-c", "#{pane_current_path}"],
+        "next-window" => vec!["next-window", "-t", &tmux_name],
+        "prev-window" => vec!["previous-window", "-t", &tmux_name],
+        "split-h" => vec!["split-window", "-h", "-t", &tmux_name, "-c", "#{pane_current_path}"],
+        "split-v" => vec!["split-window", "-v", "-t", &tmux_name, "-c", "#{pane_current_path}"],
+        "next-pane" => vec!["select-pane", "-t", &pane_target],
+        "kill-pane" => vec!["kill-pane", "-t", &tmux_name],
+        "last-window" => vec!["last-window", "-t", &tmux_name],
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("Unknown tmux action: {}", req.action),
+            ))
+        }
+    };
+
+    let output = std::process::Command::new("tmux")
+        .args(&args)
+        .output()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("tmux: {}", e)))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err((StatusCode::BAD_REQUEST, format!("tmux failed: {}", stderr)));
+    }
+
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 fn require_session_access(
