@@ -243,7 +243,30 @@ impl SessionManager {
         owner_id: &str,
         tmux_target: Option<&str>,
     ) -> Result<String, String> {
-        let cwd = if work_dir.is_empty() || work_dir == "." {
+        // When attaching to an existing tmux session, the caller usually doesn't
+        // know its directory — derive it from the session's active pane so the
+        // stored work_dir (used by the file browser / md docs) points at the
+        // session's real project dir instead of the server's launch dir.
+        let tmux_pane_dir: Option<String> = tmux_target.and_then(|target| {
+            std::process::Command::new("tmux")
+                .args([
+                    "display-message",
+                    "-p",
+                    "-t",
+                    target,
+                    "-F",
+                    "#{pane_current_path}",
+                ])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+
+        let cwd = if let Some(ref dir) = tmux_pane_dir {
+            Some(dir.as_str())
+        } else if work_dir.is_empty() || work_dir == "." {
             None
         } else {
             Some(work_dir)
@@ -334,13 +357,12 @@ impl SessionManager {
         let (pty, mut output_rx) = PtyHandle::spawn(&cmd, &args_refs, &[], cols, rows, cwd)
             .map_err(|e| format!("Failed to spawn PTY: {}", e))?;
 
-        let effective_dir = if work_dir.is_empty() || work_dir == "." {
-            std::env::current_dir()
+        let effective_dir = match cwd {
+            Some(dir) => dir.to_string(),
+            None => std::env::current_dir()
                 .unwrap_or_default()
                 .to_string_lossy()
-                .to_string()
-        } else {
-            work_dir.to_string()
+                .to_string(),
         };
 
         let (event_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
