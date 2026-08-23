@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
-import { listTunnels, createTunnel, deleteTunnel } from '../lib/api'
+import { listTunnels, createTunnel, deleteTunnel, setTunnelShareable } from '../lib/api'
 import type { Tunnel } from '../lib/api'
-import { X, RefreshCw, Cable, Trash2, ExternalLink, Circle } from 'lucide-react'
+import { X, RefreshCw, Cable, Trash2, ExternalLink, Circle, Lock, LockOpen } from 'lucide-react'
 
 interface Props {
   onClose: () => void
@@ -49,6 +49,19 @@ export default function TunnelManager({ onClose }: Props) {
     try {
       await deleteTunnel(t.slug)
       setTunnels(prev => prev.filter(x => x.slug !== t.slug))
+    } catch (e) {
+      setError(String((e as Error).message || e))
+    }
+  }
+
+  const handleToggleShare = async (t: Tunnel) => {
+    if (!t.shareable && !confirm(
+      `Make "${t.name || t.slug}" public?\n\nAnyone with the URL can access this service without logging in. The URL is unguessable, but treat it like a secret link.`
+    )) return
+    try {
+      await setTunnelShareable(t.slug, !t.shareable)
+      setTunnels(prev => prev.map(x => x.slug === t.slug ? { ...x, shareable: !t.shareable } : x))
+      setError(null)
     } catch (e) {
       setError(String((e as Error).message || e))
     }
@@ -131,6 +144,9 @@ export default function TunnelManager({ onClose }: Props) {
                     {!t.listening && (
                       <span className="text-xs text-[var(--text-muted)]">not listening</span>
                     )}
+                    {t.shareable && (
+                      <span className="text-xs text-[var(--accent-yellow)] font-medium">public link</span>
+                    )}
                   </div>
                   <a
                     href={t.url}
@@ -141,6 +157,15 @@ export default function TunnelManager({ onClose }: Props) {
                     {t.url}
                   </a>
                 </div>
+                <button
+                  onClick={() => handleToggleShare(t)}
+                  title={t.shareable ? 'Public link — click to require login' : 'Login required — click to make a shareable public link'}
+                  className={`p-1.5 rounded transition-colors ${t.shareable
+                    ? 'text-[var(--accent-yellow)] hover:text-[var(--text-primary)]'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--accent-yellow)]'}`}
+                >
+                  {t.shareable ? <LockOpen size={14} /> : <Lock size={14} />}
+                </button>
                 <a
                   href={t.url}
                   target="_blank"

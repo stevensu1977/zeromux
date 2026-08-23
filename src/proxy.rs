@@ -181,6 +181,7 @@ pub async fn list_tunnels(
                 "port": e.port,
                 "url": format!("https://{}.{}/", e.slug, base),
                 "listening": listening,
+                "shareable": e.shareable,
                 "created_at": e.created_at,
             })
         })
@@ -218,6 +219,33 @@ pub async fn create_tunnel(
         "port": exposure.port,
         "url": format!("https://{}.{}/", exposure.slug, base),
     })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct UpdateTunnelReq {
+    pub shareable: bool,
+}
+
+/// PATCH /api/tunnels/{slug} {"shareable": true} — toggle link-sharing.
+/// A shareable exposure skips cookie auth entirely: the unguessable slug
+/// is the capability, so anyone with the URL can reach the service.
+pub async fn update_tunnel(
+    State(state): State<Arc<AppState>>,
+    user: axum::Extension<crate::auth::CurrentUser>,
+    axum::extract::Path(slug): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<UpdateTunnelReq>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    let exposure = state
+        .exposures
+        .lookup(&slug)
+        .ok_or((StatusCode::NOT_FOUND, "Unknown exposure".to_string()))?;
+    if !user.is_admin() && exposure.owner_id != user.id {
+        return Err((StatusCode::FORBIDDEN, "Not your exposure".to_string()));
+    }
+    state.exposures.set_shareable(&slug, body.shareable);
+    Ok(axum::Json(
+        serde_json::json!({ "slug": slug, "shareable": body.shareable }),
+    ))
 }
 
 /// DELETE /api/tunnels/{slug}

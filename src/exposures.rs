@@ -33,6 +33,10 @@ impl ExposureStore {
             .map_err(|e| format!("Failed to create data dir: {}", e))?;
         let conn = Connection::open(data_dir.join("exposures.db"))
             .map_err(|e| format!("Failed to open exposures database: {}", e))?;
+        // WAL + NORMAL sync: a service restart shortly after a write lost an
+        // exposure row once under the default rollback journal.
+        let _ = conn.pragma_update(None, "journal_mode", "WAL");
+        let _ = conn.pragma_update(None, "synchronous", "NORMAL");
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS workspace_hashes (
                 session_id TEXT PRIMARY KEY,

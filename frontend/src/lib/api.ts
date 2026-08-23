@@ -91,7 +91,16 @@ export interface Tunnel {
   port: number
   url: string
   listening: boolean
+  shareable: boolean
   created_at: string
+}
+
+export async function setTunnelShareable(slug: string, shareable: boolean): Promise<void> {
+  const res = await api(`/api/tunnels/${slug}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ shareable }),
+  })
+  if (!res.ok) throw new Error(await res.text())
 }
 
 export async function listTunnels(): Promise<Tunnel[]> {

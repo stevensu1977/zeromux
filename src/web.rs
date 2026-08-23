@@ -29,6 +29,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/proxy/authorize", get(crate::proxy::authorize))
         .route("/api/tunnels", get(crate::proxy::list_tunnels))
         .route("/api/tunnels", post(crate::proxy::create_tunnel))
+        .route("/api/tunnels/{slug}", patch(crate::proxy::update_tunnel))
         .route("/api/tunnels/{slug}", delete(crate::proxy::delete_tunnel))
         .route("/api/sessions/{id}/logs", get(session_logs))
         .route("/api/sessions/{id}/files", get(list_session_files))
