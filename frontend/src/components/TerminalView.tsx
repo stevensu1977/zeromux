@@ -96,6 +96,7 @@ export default function TerminalView({ sessionId, active, theme }: Props) {
   const [status, setStatus] = useState<SessionStatus | null>(null)
   const [tmuxError, setTmuxError] = useState<string | null>(null)
   const [ports, setPorts] = useState<SessionPort[]>([])
+  const [wsDown, setWsDown] = useState(false)
 
   const runTmuxAction = useCallback((action: TmuxAction) => {
     tmuxAction(sessionId, action)
@@ -205,41 +206,70 @@ export default function TerminalView({ sessionId, active, theme }: Props) {
     }
   }, [theme])
 
-  // Connect WebSocket
+  // Connect WebSocket, with automatic exponential-backoff reconnect so a
+  // network blip doesn't leave a dead terminal until a manual refresh.
   useEffect(() => {
     if (!termRef.current) return
     if (wsRef.current) return
 
-    const ws = new WebSocket(wsUrl(`/ws/term/${sessionId}`))
-    wsRef.current = ws
+    let disposed = false
+    let attempt = 0
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
 
-    ws.onopen = () => {
-      const fit = fitRef.current
-      if (fit) {
-        const dims = fit.proposeDimensions()
-        // Only send a resize when the container is actually laid out. A hidden
-        // (display:none) terminal proposes a tiny size (~10x6) that would shrink
-        // the shared tmux window and truncate other clients. The resize will be
-        // sent later by the `active` effect once this terminal becomes visible.
-        if (dims && isValidDims(dims.cols, dims.rows)) {
-          ws.send(JSON.stringify({ type: 'resize', cols: dims.cols, rows: dims.rows }))
+    const connect = () => {
+      if (disposed) return
+      const ws = new WebSocket(wsUrl(`/ws/term/${sessionId}`))
+      wsRef.current = ws
+      const isReconnect = attempt > 0
+
+      ws.onopen = () => {
+        attempt = 0
+        setWsDown(false)
+        // The server replays its scrollback buffer on every connect; on a
+        // reconnect the terminal already shows that content, so reset first
+        // to avoid duplicating history.
+        if (isReconnect) termRef.current?.reset()
+        const fit = fitRef.current
+        if (fit) {
+          const dims = fit.proposeDimensions()
+          // Only send a resize when the container is actually laid out. A hidden
+          // (display:none) terminal proposes a tiny size (~10x6) that would shrink
+          // the shared tmux window and truncate other clients. The resize will be
+          // sent later by the `active` effect once this terminal becomes visible.
+          if (dims && isValidDims(dims.cols, dims.rows)) {
+            ws.send(JSON.stringify({ type: 'resize', cols: dims.cols, rows: dims.rows }))
+          }
         }
       }
+
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data)
+          if (msg.type === 'output') {
+            termRef.current?.write(b64decode(msg.data))
+          }
+        } catch { /* ignore */ }
+      }
+
+      ws.onclose = () => {
+        wsRef.current = null
+        if (disposed) return
+        setWsDown(true)
+        const delay = Math.min(1000 * 2 ** attempt, 30000)
+        attempt++
+        retryTimer = setTimeout(connect, delay)
+      }
+      ws.onerror = () => { ws.close() }
     }
 
-    ws.onmessage = (evt) => {
-      try {
-        const msg = JSON.parse(evt.data)
-        if (msg.type === 'output') {
-          termRef.current?.write(b64decode(msg.data))
-        }
-      } catch { /* ignore */ }
+    connect()
+
+    return () => {
+      disposed = true
+      if (retryTimer) clearTimeout(retryTimer)
+      wsRef.current?.close()
+      wsRef.current = null
     }
-
-    ws.onclose = () => { wsRef.current = null }
-    ws.onerror = () => { ws.close() }
-
-    return () => { ws.close() }
   }, [sessionId])
 
   const handleResize = useCallback(() => {
@@ -299,6 +329,12 @@ export default function TerminalView({ sessionId, active, theme }: Props) {
           </>
         ) : (
           <span className="text-xs text-[var(--text-muted)]">Loading...</span>
+        )}
+        {wsDown && (
+          <span className="flex items-center gap-1.5 text-xs text-[var(--accent-yellow)]">
+            <Circle size={8} className="fill-current animate-pulse shrink-0" />
+            reconnecting…
+          </span>
         )}
         {ports.map(p => (
           <button

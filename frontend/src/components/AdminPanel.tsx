@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Users, Check, Trash2, X, Shield, Clock } from 'lucide-react'
+import Avatar from './Avatar'
 import type { AdminUser } from '../lib/api'
 import { listUsers, approveUser, removeUser } from '../lib/api'
 
@@ -100,11 +101,7 @@ function UserRow({ user, onApprove, onRemove }: {
 }) {
   return (
     <div className="flex items-center gap-3 px-3 py-2 bg-[var(--bg-secondary)] rounded-lg border border-[var(--border)]">
-      {user.avatar_url ? (
-        <img src={user.avatar_url} alt="" className="w-7 h-7 rounded-full shrink-0" />
-      ) : (
-        <div className="w-7 h-7 rounded-full bg-[var(--bg-tertiary)] shrink-0" />
-      )}
+      <Avatar src={user.avatar_url} login={user.github_login} size={28} />
       <div className="flex-1 min-w-0">
         <div className="text-xs font-medium text-[var(--text-primary)] truncate">
           {user.github_login}

@@ -6,6 +6,7 @@ import { Terminal, Bot, Plus, X, PanelLeftClose, PanelLeft, Sun, Moon, Sparkles,
 import AdminPanel from './AdminPanel'
 import TmuxManager from './TmuxManager'
 import TunnelManager from './TunnelManager'
+import Avatar from './Avatar'
 import { StatusDot } from './SessionInfoBar'
 
 interface Props {
@@ -178,8 +179,8 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
       {/* Header */}
       <div className="flex items-center justify-between px-3 h-10 border-b border-[var(--border)]">
         <div className="flex items-center gap-1.5 min-w-0">
-          {user?.avatar ? (
-            <img src={user.avatar} alt="" className="w-5 h-5 rounded-full shrink-0" />
+          {user ? (
+            <Avatar src={user.avatar} login={user.login} size={20} />
           ) : (
             <span className="text-xs font-bold text-[var(--accent-blue)] tracking-wide uppercase">ZM</span>
           )}
