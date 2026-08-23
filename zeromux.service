@@ -29,7 +29,10 @@ ExecStart=/home/ubuntu/zeromux/target/release/zeromux --port 8400 --host 127.0.0
 
 Restart=on-failure
 RestartSec=3
-KillMode=mixed
+# "process" (not "mixed"): a tmux server first spawned by the web UI lives in
+# this unit's cgroup; with KillMode=mixed a restart SIGKILLs it and every agent
+# inside. Kill only the main zeromux process — tmux sessions must survive.
+KillMode=process
 TimeoutStopSec=15
 
 [Install]
