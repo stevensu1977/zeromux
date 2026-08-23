@@ -85,6 +85,36 @@ export async function exposePort(id: string, port: number): Promise<{ slug: stri
   return res.json()
 }
 
+export interface Tunnel {
+  slug: string
+  name: string
+  port: number
+  url: string
+  listening: boolean
+  created_at: string
+}
+
+export async function listTunnels(): Promise<Tunnel[]> {
+  const res = await api('/api/tunnels')
+  if (!res.ok) throw new Error('Failed to list tunnels')
+  const data = await res.json()
+  return data.tunnels
+}
+
+export async function createTunnel(port: number, name?: string): Promise<Tunnel> {
+  const res = await api('/api/tunnels', {
+    method: 'POST',
+    body: JSON.stringify({ port, name: name || '' }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function deleteTunnel(slug: string): Promise<void> {
+  const res = await api(`/api/tunnels/${slug}`, { method: 'DELETE' })
+  if (!res.ok && res.status !== 204) throw new Error(await res.text())
+}
+
 function getToken(): string {
   return localStorage.getItem('zeromux_token') || ''
 }

@@ -2,9 +2,10 @@ import { useState, useCallback } from 'react'
 import type { SessionInfo, SessionType, DirEntry, UserInfo, TmuxSession } from '../lib/api'
 import { listDirectories, listTmuxSessions } from '../lib/api'
 import type { Theme } from '../lib/theme'
-import { Terminal, Bot, Plus, X, PanelLeftClose, PanelLeft, Sun, Moon, Sparkles, Folder, FolderGit2, ChevronLeft, Home, LogOut, Users, MonitorUp, Link } from 'lucide-react'
+import { Terminal, Bot, Plus, X, PanelLeftClose, PanelLeft, Sun, Moon, Sparkles, Folder, FolderGit2, ChevronLeft, Home, LogOut, Users, MonitorUp, Link, Cable } from 'lucide-react'
 import AdminPanel from './AdminPanel'
 import TmuxManager from './TmuxManager'
+import TunnelManager from './TunnelManager'
 import { StatusDot } from './SessionInfoBar'
 
 interface Props {
@@ -29,6 +30,7 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
   const [pendingType, setPendingType] = useState<SessionType | null>(null)
   const [showAdmin, setShowAdmin] = useState(false)
   const [showTmux, setShowTmux] = useState(false)
+  const [showTunnels, setShowTunnels] = useState(false)
   const isAdmin = user?.role === 'admin'
 
   // Directory browser state
@@ -193,6 +195,13 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
           >
             <Terminal size={14} />
           </button>
+          <button
+            onClick={() => setShowTunnels(true)}
+            className="p-1 text-[var(--text-secondary)] hover:text-[var(--accent-green-text)] rounded transition-colors"
+            title="Port tunnels"
+          >
+            <Cable size={14} />
+          </button>
           {isAdmin && (
             <button
               onClick={() => setShowAdmin(true)}
@@ -230,6 +239,7 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
       {showAdmin && <AdminPanel onClose={() => setShowAdmin(false)} />}
       {/* Tmux Manager overlay */}
       {showTmux && <TmuxManager onClose={() => setShowTmux(false)} onAttach={(target) => onCreate('tmux', undefined, target)} />}
+      {showTunnels && <TunnelManager onClose={() => setShowTunnels(false)} />}
 
       {/* Sessions */}
       <div className="flex-1 overflow-y-auto py-1">

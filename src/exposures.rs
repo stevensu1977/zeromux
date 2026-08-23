@@ -6,6 +6,11 @@ use std::sync::Mutex;
 /// Slug shape is "<workspace_hash>-<port>" (e.g. "k7f2a9qx-3000") — the
 /// hash is per-session-stable so re-exposing the same port yields the same
 /// URL, and unguessable so the URL itself is a capability.
+/// session_id for standalone tunnels (ssh-tunnel-style port forwards that
+/// are not tied to any ZeroMux session; they share the workspace hash so
+/// re-creating a tunnel for the same port yields the same URL).
+pub const TUNNEL_SESSION: &str = "_tunnel";
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Exposure {
     pub slug: String,
@@ -14,6 +19,8 @@ pub struct Exposure {
     pub owner_id: String,
     pub shareable: bool,
     pub created_at: String,
+    #[serde(default)]
+    pub name: String,
 }
 
 pub struct ExposureStore {
@@ -43,6 +50,8 @@ impl ExposureStore {
             CREATE INDEX IF NOT EXISTS idx_exposures_session ON exposures(session_id);",
         )
         .map_err(|e| format!("Failed to create exposures tables: {}", e))?;
+        // Migration: name column for tunnels (ignore "duplicate column" error).
+        let _ = conn.execute("ALTER TABLE exposures ADD COLUMN name TEXT NOT NULL DEFAULT ''", []);
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -107,13 +116,54 @@ impl ExposureStore {
             owner_id: owner_id.to_string(),
             shareable: false,
             created_at,
+            name: String::new(),
+        })
+    }
+
+    /// Create (or return) a standalone tunnel: an exposure not tied to any
+    /// session, identified by name, pointing at a local port.
+    pub fn create_tunnel(
+        &self,
+        port: u16,
+        name: &str,
+        owner_id: &str,
+    ) -> Result<Exposure, String> {
+        let conn = self.conn.lock().unwrap();
+        if let Some(mut e) = self.lookup_by_session_port(&conn, TUNNEL_SESSION, port)? {
+            if !name.is_empty() && e.name != name {
+                conn.execute(
+                    "UPDATE exposures SET name = ?2 WHERE slug = ?1",
+                    params![e.slug, name],
+                )
+                .map_err(|e| e.to_string())?;
+                e.name = name.to_string();
+            }
+            return Ok(e);
+        }
+        let hash = self.workspace_hash(&conn, TUNNEL_SESSION)?;
+        let slug = format!("{}-{}", hash, port);
+        let created_at = chrono_now();
+        conn.execute(
+            "INSERT INTO exposures (slug, session_id, port, owner_id, shareable, created_at, name)
+             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6)",
+            params![slug, TUNNEL_SESSION, port, owner_id, created_at, name],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(Exposure {
+            slug,
+            session_id: TUNNEL_SESSION.to_string(),
+            port,
+            owner_id: owner_id.to_string(),
+            shareable: false,
+            created_at,
+            name: name.to_string(),
         })
     }
 
     pub fn lookup(&self, slug: &str) -> Option<Exposure> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT slug, session_id, port, owner_id, shareable, created_at
+            "SELECT slug, session_id, port, owner_id, shareable, created_at, name
              FROM exposures WHERE slug = ?1",
             params![slug],
             row_to_exposure,
@@ -130,7 +180,7 @@ impl ExposureStore {
         port: u16,
     ) -> Result<Option<Exposure>, String> {
         conn.query_row(
-            "SELECT slug, session_id, port, owner_id, shareable, created_at
+            "SELECT slug, session_id, port, owner_id, shareable, created_at, name
              FROM exposures WHERE session_id = ?1 AND port = ?2",
             params![session_id, port],
             row_to_exposure,
@@ -142,7 +192,7 @@ impl ExposureStore {
     pub fn list_for_session(&self, session_id: &str) -> Vec<Exposure> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = match conn.prepare(
-            "SELECT slug, session_id, port, owner_id, shareable, created_at
+            "SELECT slug, session_id, port, owner_id, shareable, created_at, name
              FROM exposures WHERE session_id = ?1",
         ) {
             Ok(s) => s,
@@ -179,6 +229,7 @@ fn row_to_exposure(row: &rusqlite::Row) -> rusqlite::Result<Exposure> {
         owner_id: row.get(3)?,
         shareable: row.get::<_, i64>(4)? != 0,
         created_at: row.get(5)?,
+        name: row.get(6).unwrap_or_default(),
     })
 }
 

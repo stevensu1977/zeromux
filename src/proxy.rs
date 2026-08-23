@@ -156,6 +156,90 @@ pub struct ExposeReq {
     pub port: u16,
 }
 
+// ── Standalone tunnels: ssh-tunnel-style forwards for services that don't
+//    run inside any ZeroMux session. Same proxy/auth path as exposures. ──
+
+/// GET /api/tunnels — list tunnels (with live listen check per port).
+pub async fn list_tunnels(
+    State(state): State<Arc<AppState>>,
+    _user: axum::Extension<crate::auth::CurrentUser>,
+) -> axum::Json<serde_json::Value> {
+    let base = proxy_base_domain(&state);
+    let tunnels: Vec<serde_json::Value> = state
+        .exposures
+        .list_for_session(crate::exposures::TUNNEL_SESSION)
+        .into_iter()
+        .map(|e| {
+            let listening = std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], e.port)),
+                std::time::Duration::from_millis(150),
+            )
+            .is_ok();
+            serde_json::json!({
+                "slug": e.slug,
+                "name": e.name,
+                "port": e.port,
+                "url": format!("https://{}.{}/", e.slug, base),
+                "listening": listening,
+                "created_at": e.created_at,
+            })
+        })
+        .collect();
+    axum::Json(serde_json::json!({ "tunnels": tunnels }))
+}
+
+#[derive(serde::Deserialize)]
+pub struct CreateTunnelReq {
+    pub port: u16,
+    #[serde(default)]
+    pub name: String,
+}
+
+/// POST /api/tunnels {"port": 3778, "name": "next-app"}
+pub async fn create_tunnel(
+    State(state): State<Arc<AppState>>,
+    user: axum::Extension<crate::auth::CurrentUser>,
+    axum::Json(body): axum::Json<CreateTunnelReq>,
+) -> Result<axum::Json<serde_json::Value>, (StatusCode, String)> {
+    if body.port < 1024 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Ports below 1024 are not proxied".to_string(),
+        ));
+    }
+    let exposure = state
+        .exposures
+        .create_tunnel(body.port, body.name.trim(), &user.id)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let base = proxy_base_domain(&state);
+    Ok(axum::Json(serde_json::json!({
+        "slug": exposure.slug,
+        "name": exposure.name,
+        "port": exposure.port,
+        "url": format!("https://{}.{}/", exposure.slug, base),
+    })))
+}
+
+/// DELETE /api/tunnels/{slug}
+pub async fn delete_tunnel(
+    State(state): State<Arc<AppState>>,
+    user: axum::Extension<crate::auth::CurrentUser>,
+    axum::extract::Path(slug): axum::extract::Path<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let exposure = state
+        .exposures
+        .lookup(&slug)
+        .ok_or((StatusCode::NOT_FOUND, "Unknown tunnel".to_string()))?;
+    if exposure.session_id != crate::exposures::TUNNEL_SESSION {
+        return Err((StatusCode::BAD_REQUEST, "Not a tunnel".to_string()));
+    }
+    if !user.is_admin() && exposure.owner_id != user.id {
+        return Err((StatusCode::FORBIDDEN, "Not your tunnel".to_string()));
+    }
+    state.exposures.remove(&slug);
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Base domain used for port subdomains, derived from external_url
 /// (e.g. https://zeromux.awscode.dev → zeromux.awscode.dev).
 pub fn proxy_base_domain(state: &AppState) -> String {
