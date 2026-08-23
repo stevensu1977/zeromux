@@ -161,7 +161,11 @@ ZeroMux ACP 会话加 `backend: agentcore`:把"spawn 本地进程"换成
    配 GitHub OAuth app + 环境变量;登录态全面切签名 JWT,legacy 密码
    退役为应急通道(还清"明文密码 token"欠账,原 AgentCore 前置项);
    统一 actor 口径(events / 将来卡片时间线:`user:<login>`、
-   `claude@<session>`、`microvm:<task>`)
+   `claude@<session>`、`microvm:<task>`)。
+   **仅邀请制(用户要求,2026-08-23)**:不开放注册。机制 P1 已备 ——
+   `ZEROMUX_ALLOWED_USERS` 白名单内首登即 active;名单外落 pending,
+   被 middleware 全面拦截(仅 /api/me),须 admin 面板手动审批。
+   激活时注意:首个登录用户自动成为 admin,激活后本人必须第一个登录。
 4. **Kanban / Tasks M1-M3** —— 调度电池,设计见 kanban-tasks-design.md
 5. **Memory/Context 迁移** —— 核心电池;集成 Mem0 等第三方引擎而非自研:
    ZeroMux 管生命周期(何时捕获/注入、work_dir 作用域、凭证托管),
