@@ -1,18 +1,34 @@
 # ZeroMux Roadmap — 执行层扩展与 Agent Team(2026-08)
 
-> 讨论日期:2026-08-14
+> 讨论日期:2026-08-14,定位修订:2026-08-23
 > 本文档记录战略层 roadmap(执行层扩展、Agent Team、远程 backend)。
 > 运维/稳定性向的 roadmap 见 [roadmap.md](roadmap.md)(2026-06,大部分仍有效)。
+> 任务/看板设计见 [kanban-tasks-design.md](kanban-tasks-design.md)(2026-08-23)。
 
-## 一、定位回顾(不变)
+## 一、定位:Agent 界的 Supabase(2026-08-23 修订)
 
-ZeroMux 是 **Agent 编排控制平面** —— 不做 agent 智能,只管 Agent I/O、
-会话生命周期、用户隔离。任务拆解与执行由 agent(Claude Code / Codex / Kiro)
-自己完成;ZeroMux 提供管道、看板与产出物通道。
+Supabase 的核心不是功能清单,是**速度**:最快的 Postgres(启动、管理)、
+最快的 auth 接入。ZeroMux 对应:**为 agent(Claude Code / Kiro / Codex / Pi)
+提供最快的管理、调度、监控** —— 不控制 agent,agent 保持主权(自己规划、
+自己执行);ZeroMux 提供它们干活时缺的基础服务(电池):
+
+| 电池 | 速度指标 |
+|---|---|
+| **管理**(会话/远程 sandbox 生命周期、凭证托管) | "要跑一个 agent" → 在跑且可访问 ≤ 30 秒,本地远程同速 |
+| **调度**(tasks-as-a-service,看板即调度器) | "任务丢进去" → agent 领走 ≤ 一条命令/一次拖拽;无 cron/DAG 控制 |
+| **监控**(events hook、会话状态、端口预览、通知) | "出事了" → 看见 ≤ 秒级,推送而非轮询 |
+| **Memory/Context 迁移**(集成 Mem0 等引擎,不自研) | 会话结束自动捕获 → 新会话/远程任务开箱注入 |
+
+两条纪律:
+1. **"最快"包含接入速度**:每个能力都要有"五行接入"形态
+   (skill 一装即用、hook 一行 curl、任务合同一个 JSON)。
+2. **试金石**:新功能先问"让管理/调度/监控哪个更快了?"答不上来就砍。
+   (本判据已砍掉:daemon 派工、任务 DAG、agent 身份密钥体系、甘特图类报表。)
 
 - 目标用户:小团队(2-5 人),共享实例 + 用户隔离
 - 工作流:手动编排 —— 人创建会话、下指令、自己看结果
 - P0(终端 mux + ACP + worktree + 日志)、P1(OAuth + 用户体系)已完成
+- 2026-08-23 已上线:slug 端口预览代理(`<hash>-<port>.zeromux.awscode.dev`)
 
 ## 二、核心架构演进:三层执行层
 
@@ -132,17 +148,23 @@ ZeroMux ACP 会话加 `backend: agentcore`:把"spawn 本地进程"换成
      dev server;
    - OAuth 已有代码未启用,团队真要共用时再开。
 
-## 六、总排序(2026-08-14)
+## 六、总排序(2026-08-23 修订)
 
-1. **KillMode 修复** —— 5 分钟,随时会爆的雷
-2. **端口代理 + token 签名化** —— 工作流闭环断点,方案已定
-3. **AgentCore backend 集成** —— 远程会话抽象立起来
-4. **Agent Team / MicroVM** —— 先完成 sample 项目 M0(出网/凭据/挂起恢复/
-   webhook 四项冒烟)→ M1-M3,再作为第二个 remote backend 插入;
-   任务看板 = 原 P2 Dashboard 的落地形态
-5. **通知闭环** —— 穿插在 3/4 之间(远程任务完成通知最刚需)
+1. **KillMode 修复** —— 5 分钟,随时会爆的雷(仍未做)
+2. ~~端口代理~~ ✅ 2026-08-23 上线(slug 子域名 + 独立 JWT)
+3. **Kanban / Tasks M1-M3** —— 调度电池,设计见 kanban-tasks-design.md
+4. **Memory/Context 迁移** —— 核心电池;集成 Mem0 等第三方引擎而非自研:
+   ZeroMux 管生命周期(何时捕获/注入、work_dir 作用域、凭证托管),
+   引擎管提取/嵌入/检索;pluggable backend trait,本地
+   `.zeromux/context/` 是实现 #1,Mem0 是 #2
+5. **AgentCore backend 集成** —— 远程会话抽象立起来
+6. **Agent Team / MicroVM** —— 先完成 sample 项目 M0 冒烟 → M1-M3,
+   再作为第二个 remote backend 插入;Kanban M4(任务合同带卡)挂在这里
+7. **通知闭环** —— 监控的最后一公里(出事推手机,不是人去翻),
+   穿插在 5/6 之间做
 
 原 P2 的"项目分组/Dashboard"不再单独立项,由任务看板 + 会话类型标识吸收。
+legacy token 签名化欠账:做 AgentCore 前必须还(登录态换 JWT)。
 
 ## 七、近期已完成(背景,均已上线)
 
