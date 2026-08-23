@@ -2090,6 +2090,29 @@ async fn tmux_action(
         }
     }
 
+    // History scrolling (mobile has no mouse wheel): page-up enters copy-mode
+    // and scrolls; scroll-exit returns to the live view.
+    if req.action == "page-up" || req.action == "page-down" || req.action == "scroll-exit" {
+        if req.action == "page-up" {
+            let _ = std::process::Command::new("tmux")
+                .args(["copy-mode", "-t", &tmux_name])
+                .output();
+        }
+        let key = match req.action.as_str() {
+            "page-up" => "page-up",
+            "page-down" => "page-down",
+            _ => "cancel",
+        };
+        let output = std::process::Command::new("tmux")
+            .args(["send-keys", "-t", &tmux_name, "-X", key])
+            .output()
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("tmux: {}", e)))?;
+        // send-keys -X fails when the pane is not in copy-mode (e.g. scroll-exit
+        // after already returning to live view) — treat that as a no-op.
+        let _ = output;
+        return Ok(Json(serde_json::json!({ "ok": true })));
+    }
+
     let pane_target = format!("{}:.+", tmux_name);
     // Open new windows/splits in the active pane's directory (usually the
     // project dir) rather than the server's cwd. tmux expands the format in -c.

@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
+import { ClipboardAddon } from '@xterm/addon-clipboard'
 import { wsUrl, getSessionStatus, tmuxAction } from '../lib/api'
 import type { SessionStatus, TmuxAction } from '../lib/api'
 import type { Theme } from '../lib/theme'
@@ -9,6 +10,7 @@ import { b64encode, b64decode } from '../lib/base64'
 import {
   GitBranch, Folder, Circle,
   Plus, ChevronLeft, ChevronRight, Columns2, Rows2, LayoutGrid, X,
+  ChevronsUp, ChevronsDown,
 } from 'lucide-react'
 
 // A hidden (display:none) terminal makes FitAddon propose a collapsed size.
@@ -74,6 +76,8 @@ interface Props {
 }
 
 const TMUX_BUTTONS: Array<{ action: TmuxAction; title: string; Icon: typeof Plus }> = [
+  { action: 'page-up', title: 'Scroll history up', Icon: ChevronsUp },
+  { action: 'page-down', title: 'Scroll history down', Icon: ChevronsDown },
   { action: 'new-window', title: 'New window', Icon: Plus },
   { action: 'prev-window', title: 'Previous window', Icon: ChevronLeft },
   { action: 'next-window', title: 'Next window', Icon: ChevronRight },
@@ -129,6 +133,17 @@ export default function TerminalView({ sessionId, active, theme }: Props) {
 
     const fit = new FitAddon()
     term.loadAddon(fit)
+    // OSC 52 support: tmux copy-mode (mouse drag) pushes the selection here,
+    // which the addon writes to the browser clipboard. tmux emits an empty
+    // selection type (ESC]52;;...), which the addon's default provider drops
+    // (it only accepts 'c'), so use a provider that accepts any type.
+    // TUIs (claude code etc.) render with NBSP instead of spaces; normalize so
+    // pasted text doesn't carry invisible 0xA0 characters.
+    term.loadAddon(new ClipboardAddon(undefined, {
+      readText: () => navigator.clipboard.readText().catch(() => ''),
+      writeText: (_sel: string, text: string) =>
+        navigator.clipboard.writeText(text.replace(/\u00a0/g, ' ')).catch(() => {}),
+    }))
     term.open(containerRef.current)
 
     try {

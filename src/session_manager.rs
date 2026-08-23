@@ -282,6 +282,7 @@ impl SessionManager {
 
         if let Some(target) = tmux_target {
             // Attach to existing tmux session
+            configure_tmux_scroll(target);
             cmd = "tmux".to_string();
             args_owned = vec!["attach".to_string(), "-t".to_string(), target.to_string()];
             tmux_session_name = Some(target.to_string());
@@ -344,6 +345,7 @@ impl SessionManager {
                     ])
                     .output();
             }
+            configure_tmux_scroll(&tmux_name);
             cmd = "tmux".to_string();
             args_owned = vec!["attach".to_string(), "-t".to_string(), tmux_name.clone()];
             tmux_session_name = Some(tmux_name);
@@ -907,6 +909,19 @@ impl SessionManager {
             .get(id)
             .map(|s| s.recording.as_ref().map(|(p, _)| p.clone()))
     }
+}
+
+/// Enable scroll-back via mouse for a tmux session: wheel-up enters copy-mode
+/// (scrolls history), wheel over a mouse-aware program (claude/codex TUIs)
+/// still passes through. history-limit is set globally because tmux only
+/// applies it to panes created afterwards.
+fn configure_tmux_scroll(tmux_name: &str) {
+    let _ = std::process::Command::new("tmux")
+        .args(["set-option", "-t", tmux_name, "mouse", "on"])
+        .output();
+    let _ = std::process::Command::new("tmux")
+        .args(["set-option", "-g", "history-limit", "50000"])
+        .output();
 }
 
 /// Capture current pane content as Vec of non-trailing-blank lines
