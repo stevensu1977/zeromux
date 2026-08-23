@@ -148,23 +148,35 @@ ZeroMux ACP 会话加 `backend: agentcore`:把"spawn 本地进程"换成
      dev server;
    - OAuth 已有代码未启用,团队真要共用时再开。
 
-## 六、总排序(2026-08-23 修订)
+## 六、总排序(2026-08-23 二次修订:身份先于看板)
+
+依据:Supabase 两根支柱 = 最快 Postgres + 最快 auth。调度(Kanban)的
+价值与 worker 数量成正比,归因(claim/owner/actor)悬空在身份缺失上 ——
+先立身份,看板落地时归因才是真的。当前单人使用,故身份激活取**最小集**:
+还债 + 铺路,不为多人做深(第二个人来时是开关不是工程)。
 
 1. **KillMode 修复** —— 5 分钟,随时会爆的雷(仍未做)
 2. ~~端口代理~~ ✅ 2026-08-23 上线(slug 子域名 + 独立 JWT)
-3. **Kanban / Tasks M1-M3** —— 调度电池,设计见 kanban-tasks-design.md
-4. **Memory/Context 迁移** —— 核心电池;集成 Mem0 等第三方引擎而非自研:
+3. **身份激活(最小集,~半天)** —— 启用已建成未启用的 P1 OAuth:
+   配 GitHub OAuth app + 环境变量;登录态全面切签名 JWT,legacy 密码
+   退役为应急通道(还清"明文密码 token"欠账,原 AgentCore 前置项);
+   统一 actor 口径(events / 将来卡片时间线:`user:<login>`、
+   `claude@<session>`、`microvm:<task>`)
+4. **Kanban / Tasks M1-M3** —— 调度电池,设计见 kanban-tasks-design.md
+5. **Memory/Context 迁移** —— 核心电池;集成 Mem0 等第三方引擎而非自研:
    ZeroMux 管生命周期(何时捕获/注入、work_dir 作用域、凭证托管),
    引擎管提取/嵌入/检索;pluggable backend trait,本地
    `.zeromux/context/` 是实现 #1,Mem0 是 #2
-5. **AgentCore backend 集成** —— 远程会话抽象立起来
-6. **Agent Team / MicroVM** —— 先完成 sample 项目 M0 冒烟 → M1-M3,
+6. **AgentCore backend 集成** —— 远程会话抽象立起来
+7. **Agent Team / MicroVM** —— 先完成 sample 项目 M0 冒烟 → M1-M3,
    再作为第二个 remote backend 插入;Kanban M4(任务合同带卡)挂在这里
-7. **通知闭环** —— 监控的最后一公里(出事推手机,不是人去翻),
-   穿插在 5/6 之间做
+8. **通知闭环** —— 监控的最后一公里(出事推手机,不是人去翻),
+   穿插在 6/7 之间做
 
-原 P2 的"项目分组/Dashboard"不再单独立项,由任务看板 + 会话类型标识吸收。
-legacy token 签名化欠账:做 AgentCore 前必须还(登录态换 JWT)。
+"多 agent"拆解:本地多 agent 已有(claude/kiro/codex 会话类型);
+远程多 agent = 6/7 两条主线,依赖重,顺位不前移,但身份/token 地基
+打好后它们接入更快。原 P2 的"项目分组/Dashboard"不再单独立项,
+由任务看板 + 会话类型标识吸收。
 
 ## 七、近期已完成(背景,均已上线)
 
