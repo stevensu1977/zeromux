@@ -24,6 +24,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}", patch(update_session))
         .route("/api/sessions/{id}/status", get(session_status))
         .route("/api/sessions/{id}/tmux", post(tmux_action))
+        .route("/api/sessions/{id}/ports", get(crate::proxy::session_ports))
+        .route("/api/sessions/{id}/expose", post(crate::proxy::expose_port))
+        .route("/api/proxy/authorize", get(crate::proxy::authorize))
         .route("/api/sessions/{id}/logs", get(session_logs))
         .route("/api/sessions/{id}/files", get(list_session_files))
         .route("/api/sessions/{id}/file", get(get_session_file))
@@ -97,7 +100,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/ws/term/{session_id}", get(crate::ws_handler::ws_terminal))
         .route("/ws/acp/{session_id}", get(crate::acp::ws_handler::ws_acp));
 
-    Router::new()
+    let app = Router::new()
         .merge(api)
         .merge(me_api)
         .merge(events_ingest)
@@ -106,7 +109,31 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/assets/{*path}", get(serve_asset))
         .fallback(get(spa_fallback))
         .layer(DefaultBodyLimit::max(20 * 1024 * 1024))
-        .with_state(state)
+        .with_state(state.clone());
+
+    // Host dispatch: requests for "<slug>.<base>" hostnames go to the port
+    // proxy; everything else falls through to the normal app router.
+    let proxy_state = state.clone();
+    Router::new().fallback_service(tower::service_fn(move |req: axum::extract::Request| {
+        let app = app.clone();
+        let proxy_state = proxy_state.clone();
+        async move {
+            let base = crate::proxy::proxy_base_domain(&proxy_state);
+            let is_proxy_host = crate::proxy::forwarded_host(req.headers())
+                .and_then(|h| crate::proxy::slug_from_host(&h, &base))
+                .is_some();
+            let resp = if is_proxy_host {
+                crate::proxy::handle(State(proxy_state), req).await
+            } else {
+                use tower::ServiceExt;
+                match app.oneshot(req).await {
+                    Ok(r) => r,
+                    Err(never) => match never {},
+                }
+            };
+            Ok::<_, std::convert::Infallible>(resp)
+        }
+    }))
 }
 
 /// GET /auth/mode — tells frontend which auth mode is available

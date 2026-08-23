@@ -62,6 +62,29 @@ export async function tmuxAction(id: string, action: TmuxAction): Promise<void> 
   if (!res.ok) throw new Error(await res.text())
 }
 
+export interface SessionPort {
+  port: number
+  slug: string | null
+  url: string | null
+  shareable: boolean
+}
+
+export async function getSessionPorts(id: string): Promise<SessionPort[]> {
+  const res = await api(`/api/sessions/${id}/ports`)
+  if (!res.ok) throw new Error('Failed to get ports')
+  const data = await res.json()
+  return data.ports
+}
+
+export async function exposePort(id: string, port: number): Promise<{ slug: string; url: string }> {
+  const res = await api(`/api/sessions/${id}/expose`, {
+    method: 'POST',
+    body: JSON.stringify({ port }),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
 function getToken(): string {
   return localStorage.getItem('zeromux_token') || ''
 }

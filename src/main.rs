@@ -6,6 +6,8 @@ mod events;
 mod logger;
 mod notes;
 mod oauth;
+mod exposures;
+mod proxy;
 mod pty_bridge;
 mod recordings;
 mod session_manager;
@@ -105,6 +107,7 @@ pub struct AppState {
     pub notes: notes::NotesStore,
     pub events: events::EventStore,
     pub recordings: recordings::RecordingStore,
+    pub exposures: exposures::ExposureStore,
     pub github_client_id: Option<String>,
     pub github_client_secret: Option<String>,
     pub jwt_secret: String,
@@ -204,6 +207,8 @@ async fn main() {
         .expect("Failed to initialize event store");
     let recording_store = recordings::RecordingStore::open(std::path::Path::new(&data_dir_str))
         .expect("Failed to initialize recording store");
+    let exposure_store = exposures::ExposureStore::open(std::path::Path::new(&data_dir_str))
+        .expect("Failed to initialize exposure store");
 
     if oauth_configured {
         println!("GitHub OAuth enabled");
@@ -226,6 +231,7 @@ async fn main() {
         notes: notes_store,
         events: event_store,
         recordings: recording_store,
+        exposures: exposure_store,
         github_client_id: args.github_client_id,
         github_client_secret: args.github_client_secret,
         jwt_secret,

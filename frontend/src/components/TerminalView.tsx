@@ -3,14 +3,14 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { ClipboardAddon } from '@xterm/addon-clipboard'
-import { wsUrl, getSessionStatus, tmuxAction } from '../lib/api'
-import type { SessionStatus, TmuxAction } from '../lib/api'
+import { wsUrl, getSessionStatus, tmuxAction, getSessionPorts, exposePort } from '../lib/api'
+import type { SessionStatus, TmuxAction, SessionPort } from '../lib/api'
 import type { Theme } from '../lib/theme'
 import { b64encode, b64decode } from '../lib/base64'
 import {
   GitBranch, Folder, Circle,
   Plus, ChevronLeft, ChevronRight, Columns2, Rows2, LayoutGrid, X,
-  ChevronsUp, ChevronsDown,
+  ChevronsUp, ChevronsDown, Globe,
 } from 'lucide-react'
 
 // A hidden (display:none) terminal makes FitAddon propose a collapsed size.
@@ -95,6 +95,7 @@ export default function TerminalView({ sessionId, active, theme }: Props) {
   const initRef = useRef(false)
   const [status, setStatus] = useState<SessionStatus | null>(null)
   const [tmuxError, setTmuxError] = useState<string | null>(null)
+  const [ports, setPorts] = useState<SessionPort[]>([])
 
   const runTmuxAction = useCallback((action: TmuxAction) => {
     tmuxAction(sessionId, action)
@@ -104,12 +105,15 @@ export default function TerminalView({ sessionId, active, theme }: Props) {
     termRef.current?.focus()
   }, [sessionId])
 
-  // Fetch status
+  // Fetch status + listening ports
   useEffect(() => {
     let cancelled = false
     const fetchStatus = () => {
       getSessionStatus(sessionId).then(s => {
         if (!cancelled) setStatus(s)
+      }).catch(() => {})
+      getSessionPorts(sessionId).then(p => {
+        if (!cancelled) setPorts(p)
       }).catch(() => {})
     }
     fetchStatus()
@@ -280,6 +284,26 @@ export default function TerminalView({ sessionId, active, theme }: Props) {
         ) : (
           <span className="text-xs text-[var(--text-muted)]">Loading...</span>
         )}
+        {ports.map(p => (
+          <button
+            key={p.port}
+            title={`Open localhost:${p.port} preview`}
+            className="flex items-center gap-1 text-xs text-[var(--accent-green-text,var(--accent-green))] hover:underline"
+            onClick={async () => {
+              try {
+                // Exposing is idempotent: returns the existing slug URL if
+                // this port was exposed before.
+                const url = p.url ?? (await exposePort(sessionId, p.port)).url
+                window.open(url, '_blank', 'noreferrer')
+              } catch (e) {
+                setTmuxError(String((e as Error).message || e))
+              }
+            }}
+          >
+            <Globe size={13} className="shrink-0" />
+            <span>:{p.port}</span>
+          </button>
+        ))}
         <div className="flex items-center gap-1 ml-auto">
           {tmuxError && (
             <span className="text-xs text-[var(--accent-red)] truncate max-w-[240px]" title={tmuxError}>
