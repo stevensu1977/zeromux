@@ -30,13 +30,11 @@ pub async fn ws_acp(
     ws: WebSocketUpgrade,
     Path(session_id): Path<String>,
     Query(query): Query<WsQuery>,
+    headers: axum::http::HeaderMap,
     State(state): State<Arc<AppState>>,
 ) -> Response {
-    let authed = query
-        .token
-        .as_ref()
-        .and_then(|t| auth::verify_ws_token(&state, t))
-        .is_some();
+    let authed =
+        auth::verify_ws_request(&state, query.token.as_deref(), &headers).is_some();
 
     if !authed {
         return Response::builder()

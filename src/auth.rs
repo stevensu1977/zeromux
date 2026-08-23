@@ -187,6 +187,34 @@ fn try_legacy_auth(
     false
 }
 
+/// Authenticate a WebSocket upgrade: try the ?token= query param first,
+/// then fall back to cookies (zeromux_jwt is HttpOnly so the frontend
+/// cannot put it in the query string — but the browser sends it on the
+/// upgrade request automatically).
+pub fn verify_ws_request(
+    state: &AppState,
+    query_token: Option<&str>,
+    headers: &axum::http::HeaderMap,
+) -> Option<CurrentUser> {
+    if let Some(token) = query_token.filter(|t| !t.is_empty()) {
+        if let Some(user) = verify_ws_token(state, token) {
+            return Some(user);
+        }
+    }
+    let cookie_str = headers.get("Cookie")?.to_str().ok()?;
+    for part in cookie_str.split(';') {
+        let part = part.trim();
+        for name in ["zeromux_jwt=", "zeromux_token="] {
+            if let Some(val) = part.strip_prefix(name) {
+                if let Some(user) = verify_ws_token(state, val) {
+                    return Some(user);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Verify a WebSocket token — returns CurrentUser if valid and active.
 pub fn verify_ws_token(state: &AppState, token: &str) -> Option<CurrentUser> {
     // Try JWT
