@@ -370,12 +370,11 @@ async fn forward(mut req: Request<Body>, port: u16) -> Response {
         Err(_) => return (StatusCode::BAD_REQUEST, "Bad target URI").into_response(),
     };
 
-    let is_upgrade = req
-        .headers()
-        .get(header::CONNECTION)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.to_ascii_lowercase().contains("upgrade"))
-        .unwrap_or(false);
+    // Detect upgrades by the Upgrade header, NOT Connection: nginx's
+    // websocket passthrough pattern sets `Connection: upgrade` on every
+    // proxied request, and treating a plain POST as an upgrade drops its
+    // body (upgrade forwarding sends Body::empty), hanging the upstream.
+    let is_upgrade = req.headers().contains_key(header::UPGRADE);
 
     // Rewrite the request for the upstream: local target, Host of the app.
     *req.uri_mut() = origin_uri;
