@@ -10,7 +10,7 @@ import { b64encode, b64decode } from '../lib/base64'
 import {
   GitBranch, Folder, Circle,
   Plus, ChevronLeft, ChevronRight, Columns2, Rows2, LayoutGrid, X,
-  ChevronsUp, ChevronsDown, Globe,
+  ChevronsUp, ChevronsDown, Globe, ClipboardPaste,
 } from 'lucide-react'
 
 // A hidden (display:none) terminal makes FitAddon propose a collapsed size.
@@ -104,6 +104,22 @@ export default function TerminalView({ sessionId, active, theme }: Props) {
     // Keep keystrokes flowing to the terminal after a button tap
     termRef.current?.focus()
   }, [sessionId])
+
+  // Mobile browsers never deliver a native paste event to xterm's hidden
+  // textarea (no long-press paste bubble on a hidden element), so offer an
+  // explicit button. readText() needs HTTPS + a user gesture; iOS shows its
+  // system "Paste?" confirmation next to the tap. term.paste() takes the
+  // same path as a native paste event, so bracketed paste mode is honored.
+  const handlePaste = useCallback(async () => {
+    try {
+      const text = await navigator.clipboard.readText()
+      if (text) termRef.current?.paste(text)
+      setTmuxError(null)
+    } catch {
+      setTmuxError('Clipboard read not allowed')
+    }
+    termRef.current?.focus()
+  }, [])
 
   // Fetch status + listening ports
   useEffect(() => {
@@ -310,6 +326,13 @@ export default function TerminalView({ sessionId, active, theme }: Props) {
               {tmuxError}
             </span>
           )}
+          <button
+            title="Paste from clipboard"
+            onClick={handlePaste}
+            className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--text-bright)] hover:bg-[var(--bg-hover)] transition-colors"
+          >
+            <ClipboardPaste size={14} />
+          </button>
           {TMUX_BUTTONS.map(({ action, title, Icon }) => (
             <button
               key={action}
