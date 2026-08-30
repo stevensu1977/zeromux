@@ -26,6 +26,12 @@ pub struct JwtClaims {
 #[derive(serde::Deserialize)]
 pub struct RedirectQuery {
     pub remember: Option<bool>,
+    pub return_to: Option<String>,
+}
+
+/// Only same-site relative paths may be used as post-login redirects.
+fn is_safe_return(path: &str) -> bool {
+    path.starts_with('/') && !path.starts_with("//") && !path.contains('\\')
 }
 
 /// GET /auth/github — redirect to GitHub authorize URL
@@ -44,17 +50,23 @@ pub async fn github_redirect(
         }
     };
 
-    let remember_flag = if query.remember.unwrap_or(false) {
+    // state = remember flag, optionally followed by "|<return path>" so the
+    // post-login redirect survives the GitHub round trip.
+    let mut state_param = String::from(if query.remember.unwrap_or(false) {
         "1"
     } else {
         "0"
-    };
+    });
+    if let Some(rt) = query.return_to.as_deref().filter(|r| is_safe_return(r)) {
+        state_param.push('|');
+        state_param.push_str(rt);
+    }
     let callback_url = format!("{}/auth/github/callback", state.external_url);
     let url = format!(
         "https://github.com/login/oauth/authorize?client_id={}&redirect_uri={}&scope=read:user&state={}",
         client_id,
         urlencoding::encode(&callback_url),
-        remember_flag,
+        urlencoding::encode(&state_param),
     );
     Redirect::temporary(&url).into_response()
 }
@@ -138,8 +150,15 @@ pub async fn github_callback(
         user.status
     );
 
+    // Unpack state: "<remember flag>" or "<remember flag>|<return path>"
+    let state_param = query.state.as_deref().unwrap_or("0");
+    let (remember_flag, return_to) = match state_param.split_once('|') {
+        Some((flag, rt)) => (flag, Some(rt)),
+        None => (state_param, None),
+    };
+
     // Issue JWT
-    let remember = query.state.as_deref() == Some("1");
+    let remember = remember_flag == "1";
     let jwt = match issue_jwt(&user, &state.jwt_secret, remember) {
         Ok(t) => t,
         Err(e) => {
@@ -159,9 +178,14 @@ pub async fn github_callback(
         jwt, max_age
     );
 
+    // Pending users always land on the frontend (approval screen).
+    let location = return_to
+        .filter(|r| is_safe_return(r) && user.status == "active")
+        .unwrap_or("/");
+
     Response::builder()
         .status(302)
-        .header("Location", "/")
+        .header("Location", location)
         .header("Set-Cookie", cookie)
         .body(axum::body::Body::empty())
         .unwrap()

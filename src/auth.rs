@@ -2,7 +2,7 @@ use axum::{
     extract::{Query, State},
     http::{Request, StatusCode},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use jsonwebtoken::{decode, DecodingKey, Validation};
 use sha2::{Digest, Sha256};
@@ -81,6 +81,27 @@ pub async fn auth_middleware(
         if try_legacy_auth(password_hash, &query, &req) {
             req.extensions_mut().insert(CurrentUser::legacy());
             return Ok(next.run(req).await);
+        }
+    }
+
+    // Unauthenticated browser navigation to the proxy-authorize endpoint:
+    // bounce to the login page with a return_to instead of a bare 401, so
+    // the user lands back on the tunnel after logging in.
+    if req.uri().path() == "/api/proxy/authorize" {
+        let is_navigation = req
+            .headers()
+            .get(axum::http::header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .map(|a| a.contains("text/html"))
+            .unwrap_or(false);
+        if is_navigation {
+            let original = req
+                .uri()
+                .path_and_query()
+                .map(|pq| pq.as_str())
+                .unwrap_or("/");
+            let url = format!("/?return_to={}", crate::proxy::urlencode(original));
+            return Ok(axum::response::Redirect::temporary(&url).into_response());
         }
     }
 

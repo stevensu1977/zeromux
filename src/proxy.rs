@@ -559,7 +559,7 @@ fn strip_cookie(headers: &mut HeaderMap, name: &str) {
     }
 }
 
-fn urlencode(s: &str) -> String {
+pub fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
     for b in s.bytes() {
         match b {

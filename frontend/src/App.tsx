@@ -5,7 +5,7 @@ import { useTheme } from './lib/theme'
 import Sidebar from './components/Sidebar'
 import TerminalView from './components/TerminalView'
 import AcpChatView from './components/AcpChatView'
-import LoginPage from './components/LoginPage'
+import LoginPage, { getReturnTo } from './components/LoginPage'
 import WaitingPage from './components/WaitingPage'
 import SessionInfoBar from './components/SessionInfoBar'
 import FileBrowser from './components/FileBrowser'
@@ -31,6 +31,13 @@ export default function App() {
     if (me) {
       setUser(me)
       if (me.status === 'active') {
+        // Already logged in but bounced here with a return_to (e.g. a tunnel
+        // authorize URL) — go straight back.
+        const returnTo = getReturnTo()
+        if (returnTo) {
+          window.location.replace(returnTo)
+          return
+        }
         setAuthState('active')
         loadSessions()
       } else {
