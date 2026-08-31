@@ -2,6 +2,9 @@ export type SessionType = 'tmux' | 'claude' | 'kiro' | 'codex'
 
 export type SessionMetaStatus = 'running' | 'done' | 'blocked' | 'idle'
 
+export type AgentActivity = 'running' | 'idle' | 'needs_input'
+export type AttentionReason = 'finished' | 'needs_input'
+
 export interface SessionInfo {
   id: string
   name: string
@@ -11,6 +14,12 @@ export interface SessionInfo {
   work_dir: string
   description: string
   status: SessionMetaStatus
+  tmux_name?: string | null
+  /** Live agent state reported by CLI hooks inside the tmux session */
+  activity?: AgentActivity | null
+  attention?: AttentionReason | null
+  /** LLM-generated task title from the session's first prompt */
+  auto_title?: string | null
 }
 
 export interface NoteEntry {
@@ -41,6 +50,10 @@ export interface UserInfo {
 export interface AuthMode {
   oauth: boolean
   legacy: boolean
+}
+
+export async function clearAttention(id: string): Promise<void> {
+  await api(`/api/sessions/${id}/attention/clear`, { method: 'POST' })
 }
 
 export async function getSessionStatus(id: string): Promise<SessionStatus> {

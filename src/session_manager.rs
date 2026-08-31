@@ -113,6 +113,7 @@ pub struct SessionInfo {
     pub work_dir: String,
     pub description: String,
     pub status: SessionMeta,
+    pub tmux_name: Option<String>,
 }
 
 pub struct RecordingStart {
@@ -125,6 +126,21 @@ pub struct RecordingStart {
 pub struct RecordingStop {
     pub file_path: PathBuf,
     pub new_line_count: usize,
+}
+
+/// Set the activity-hook variables in a tmux session's environment so panes
+/// and windows created later inherit them (existing shells are unaffected).
+fn set_activity_env(tmux_name: &str, secret: &str, api_base: &str) {
+    let token = crate::activity::activity_token(secret, tmux_name);
+    for (k, v) in [
+        ("ZEROMUX_TMUX_SESSION", tmux_name),
+        ("ZEROMUX_ACTIVITY_TOKEN", token.as_str()),
+        ("ZEROMUX_API", api_base),
+    ] {
+        let _ = std::process::Command::new("tmux")
+            .args(["set-environment", "-t", tmux_name, k, v])
+            .output();
+    }
 }
 
 // ── Git worktree helpers ──
@@ -242,6 +258,8 @@ impl SessionManager {
         rows: u16,
         owner_id: &str,
         tmux_target: Option<&str>,
+        // (jwt_secret, api_base) — enables activity-hook env injection
+        hook_env: Option<(&str, &str)>,
     ) -> Result<String, String> {
         // When attaching to an existing tmux session, the caller usually doesn't
         // know its directory — derive it from the session's active pane so the
@@ -283,6 +301,9 @@ impl SessionManager {
         if let Some(target) = tmux_target {
             // Attach to existing tmux session
             configure_tmux_scroll(target);
+            if let Some((secret, api_base)) = hook_env {
+                set_activity_env(target, secret, api_base);
+            }
             cmd = "tmux".to_string();
             args_owned = vec!["attach".to_string(), "-t".to_string(), target.to_string()];
             tmux_session_name = Some(target.to_string());
@@ -312,6 +333,14 @@ impl SessionManager {
                 ]);
                 if let Some(dir) = cwd {
                     create_cmd.args(["-c", dir]);
+                }
+                // Inject activity-hook env so the initial pane's shell (and
+                // everything launched from it, e.g. claude) can report state.
+                if let Some((secret, api_base)) = hook_env {
+                    let token = crate::activity::activity_token(secret, &tmux_name);
+                    create_cmd.args(["-e", &format!("ZEROMUX_TMUX_SESSION={}", tmux_name)]);
+                    create_cmd.args(["-e", &format!("ZEROMUX_ACTIVITY_TOKEN={}", token)]);
+                    create_cmd.args(["-e", &format!("ZEROMUX_API={}", api_base)]);
                 }
                 create_cmd.arg(shell);
                 let output = create_cmd
@@ -346,6 +375,11 @@ impl SessionManager {
                     .output();
             }
             configure_tmux_scroll(&tmux_name);
+            // Re-attach path: existing panes keep their env, but make sure the
+            // session environment carries the hook vars for future windows.
+            if let Some((secret, api_base)) = hook_env {
+                set_activity_env(&tmux_name, secret, api_base);
+            }
             cmd = "tmux".to_string();
             args_owned = vec!["attach".to_string(), "-t".to_string(), tmux_name.clone()];
             tmux_session_name = Some(tmux_name);
@@ -625,8 +659,18 @@ impl SessionManager {
                 work_dir: s.work_dir.clone(),
                 description: s.description.clone(),
                 status: s.status,
+                tmux_name: s.tmux_session_name.clone(),
             })
             .collect()
+    }
+
+    /// Underlying tmux session name, if the session is tmux-backed.
+    pub fn tmux_name_of(&self, session_id: &str) -> Option<String> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .and_then(|s| s.tmux_session_name.clone())
     }
 
     /// Check if a user owns a session

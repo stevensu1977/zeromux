@@ -26,6 +26,17 @@ interface Props {
 
 type NewSessionStep = 'closed' | 'pick-type' | 'pick-terminal-mode' | 'pick-dir' | 'pick-tmux'
 
+/** Hook-reported agent activity takes precedence over the manual status dot. */
+function ActivityDot({ s }: { s: SessionInfo }) {
+  if (s.attention === 'needs_input' || s.activity === 'needs_input')
+    return <span title="Needs input" className="inline-block w-2 h-2 rounded-full bg-orange-400 animate-pulse shrink-0" />
+  if (s.attention === 'finished')
+    return <span title="Agent finished" className="inline-block w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-emerald-400/30 shrink-0" />
+  if (s.activity === 'running')
+    return <span title="Agent running" className="inline-block w-2 h-2 rounded-full bg-blue-400 animate-pulse shrink-0" />
+  return <StatusDot status={s.status} />
+}
+
 export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDelete, onLogout, theme, onToggleTheme, user, open, onToggle, mobile }: Props) {
   const [step, setStep] = useState<NewSessionStep>('closed')
   const [pendingType, setPendingType] = useState<SessionType | null>(null)
@@ -254,12 +265,12 @@ export default function Sidebar({ sessions, activeId, onSelect, onCreate, onDele
                 : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
             }`}
           >
-            <StatusDot status={s.status} />
+            <ActivityDot s={s} />
             {s.type === 'claude' ? <Bot size={13} className="shrink-0" /> : s.type === 'kiro' ? <Sparkles size={13} className="shrink-0" /> : <Terminal size={13} className="shrink-0" />}
             <div className="flex-1 min-w-0">
               <div className="truncate">{s.name}</div>
-              {s.description && (
-                <div className="truncate text-[10px] text-[var(--text-muted)] -mt-0.5">{s.description}</div>
+              {(s.description || s.auto_title) && (
+                <div className="truncate text-[10px] text-[var(--text-muted)] -mt-0.5">{s.description || s.auto_title}</div>
               )}
             </div>
             <button

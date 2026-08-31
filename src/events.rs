@@ -195,7 +195,7 @@ impl EventStore {
     }
 }
 
-fn now_iso() -> String {
+pub fn now_iso() -> String {
     let d = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();

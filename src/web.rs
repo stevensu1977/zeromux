@@ -24,6 +24,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}", patch(update_session))
         .route("/api/sessions/{id}/status", get(session_status))
         .route("/api/sessions/{id}/tmux", post(tmux_action))
+        .route(
+            "/api/sessions/{id}/attention/clear",
+            post(clear_session_attention),
+        )
         .route("/api/sessions/{id}/ports", get(crate::proxy::session_ports))
         .route("/api/sessions/{id}/expose", post(crate::proxy::expose_port))
         .route("/api/proxy/authorize", get(crate::proxy::authorize))
@@ -98,7 +102,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/auth/mode", get(auth_mode));
 
     // Events POST — uses token query param auth (like WebSocket) for hook access
-    let events_ingest = Router::new().route("/api/events", post(create_event));
+    let events_ingest = Router::new()
+        .route("/api/events", post(create_event))
+        // Activity POST — authenticated by per-tmux-session derived token
+        .route("/api/terminal-activity", post(report_terminal_activity));
 
     let ws = Router::new()
         .route("/ws/term/{session_id}", get(crate::ws_handler::ws_terminal))
@@ -352,8 +359,10 @@ struct TmuxActionReq {
 }
 
 async fn kill_tmux_session(
+    State(state): State<Arc<AppState>>,
     Json(req): Json<TmuxActionReq>,
 ) -> Result<StatusCode, (StatusCode, String)> {
+    state.activity.forget(&req.name);
     let output = std::process::Command::new("tmux")
         .args(["kill-session", "-t", &req.name])
         .output()
@@ -456,6 +465,7 @@ async fn create_session(
                 state.default_rows,
                 &owner_id,
                 req.tmux_target.as_deref(),
+                Some((&state.jwt_secret, &state.api_base)),
             )
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?,
         crate::session_manager::SessionType::Claude => state
@@ -513,7 +523,76 @@ async fn list_sessions(
         Some(user.id.as_str())
     };
     let sessions = state.sessions.list_sessions(filter);
-    Json(serde_json::json!({ "sessions": sessions }))
+    // Enrich with hook-reported activity and auto-generated titles (both
+    // keyed by tmux session name).
+    let enriched: Vec<serde_json::Value> = sessions
+        .into_iter()
+        .map(|s| {
+            let mut v = serde_json::to_value(&s).unwrap_or_default();
+            if let Some(ref tmux) = s.tmux_name {
+                let activity = state.activity.get(tmux);
+                v["activity"] = serde_json::json!(activity.as_ref().map(|a| a.state.clone()));
+                v["attention"] = serde_json::json!(activity.and_then(|a| a.attention));
+                v["auto_title"] = serde_json::json!(state.activity.title(tmux));
+            }
+            v
+        })
+        .collect();
+    Json(serde_json::json!({ "sessions": enriched }))
+}
+
+// ── Terminal activity (agent-CLI hooks) ──
+
+#[derive(serde::Deserialize)]
+struct ActivityReport {
+    tmux_session: String,
+    token: String,
+    state: String,
+    prompt: Option<String>,
+}
+
+/// POST /api/terminal-activity — called by hooks running inside tmux
+/// sessions (no JWT available there). Authenticated by the per-session
+/// token derived from the JWT secret.
+async fn report_terminal_activity(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ActivityReport>,
+) -> StatusCode {
+    let expected = crate::activity::activity_token(&state.jwt_secret, &req.tmux_session);
+    if req.token != expected {
+        return StatusCode::UNAUTHORIZED;
+    }
+    if !matches!(req.state.as_str(), "running" | "idle" | "needs_input") {
+        return StatusCode::BAD_REQUEST;
+    }
+
+    let prompt = req.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty());
+    let wants_title = state
+        .activity
+        .report(&req.tmux_session, &req.state, prompt.is_some());
+    if wants_title {
+        crate::activity::spawn_title_generation(
+            state.clone(),
+            req.tmux_session.clone(),
+            prompt.unwrap_or_default().to_string(),
+        );
+    }
+    StatusCode::OK
+}
+
+/// POST /api/sessions/{id}/attention/clear — user focused the session.
+async fn clear_session_attention(
+    State(state): State<Arc<AppState>>,
+    user: axum::Extension<CurrentUser>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> StatusCode {
+    if !user.is_admin() && !state.sessions.is_owner(&id, &user.id) {
+        return StatusCode::FORBIDDEN;
+    }
+    if let Some(tmux) = state.sessions.tmux_name_of(&id) {
+        state.activity.clear_attention(&tmux);
+    }
+    StatusCode::OK
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -533,6 +612,10 @@ async fn delete_session(
     }
 
     let removed = if query.kill.unwrap_or(false) {
+        // Forget activity/title so a reused tmux name doesn't inherit them
+        if let Some(tmux) = state.sessions.tmux_name_of(&id) {
+            state.activity.forget(&tmux);
+        }
         state.sessions.kill_session(&id)
     } else {
         state.sessions.remove_session(&id)

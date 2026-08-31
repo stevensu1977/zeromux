@@ -1,4 +1,5 @@
 mod acp;
+mod activity;
 mod admin;
 mod auth;
 mod db;
@@ -90,6 +91,10 @@ struct Args {
     /// External URL for OAuth callback (e.g. https://myserver.com)
     #[arg(long, env = "ZEROMUX_EXTERNAL_URL")]
     external_url: Option<String>,
+
+    /// Install agent-CLI activity hooks into ~/.claude/settings.json and exit
+    #[arg(long)]
+    install_hooks: bool,
 }
 
 pub struct AppState {
@@ -113,6 +118,101 @@ pub struct AppState {
     pub jwt_secret: String,
     pub allowed_users: Vec<String>,
     pub external_url: String,
+    pub activity: activity::ActivityStore,
+    /// Loopback base URL hooks inside tmux sessions POST activity to
+    pub api_base: String,
+}
+
+/// Install the terminal-activity reporter script and wire it into Claude
+/// Code's hooks (~/.claude/settings.json). Idempotent: skips hooks that
+/// already reference the reporter. The hooks are inert outside ZeroMux tmux
+/// sessions (they exit immediately when ZEROMUX_TMUX_SESSION is unset).
+fn install_hooks(port: u16) {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/ubuntu".to_string());
+    let hooks_dir = format!("{}/.zeromux/hooks", home);
+    let script_path = format!("{}/activity.py", hooks_dir);
+
+    std::fs::create_dir_all(&hooks_dir).expect("Failed to create hooks dir");
+    let script = format!(
+        r#"#!/usr/bin/env python3
+# ZeroMux terminal-activity reporter (installed by `zeromux --install-hooks`).
+# Inert unless ZEROMUX_TMUX_SESSION is set (i.e. inside a ZeroMux tmux session).
+import json, os, sys, urllib.request
+
+state = sys.argv[1] if len(sys.argv) > 1 else "idle"
+tmux = os.environ.get("ZEROMUX_TMUX_SESSION")
+token = os.environ.get("ZEROMUX_ACTIVITY_TOKEN", "")
+if not tmux:
+    sys.exit(0)
+
+prompt = None
+try:
+    data = json.load(sys.stdin)
+    prompt = (data.get("prompt") or "")[:1000] or None
+except Exception:
+    pass
+
+body = json.dumps({{"tmux_session": tmux, "token": token, "state": state, "prompt": prompt}}).encode()
+api = os.environ.get("ZEROMUX_API", "http://127.0.0.1:{port}")
+try:
+    urllib.request.urlopen(
+        urllib.request.Request(api + "/api/terminal-activity", data=body,
+                               headers={{"Content-Type": "application/json"}}),
+        timeout=2,
+    )
+except Exception:
+    pass
+"#,
+        port = port
+    );
+    std::fs::write(&script_path, script).expect("Failed to write activity.py");
+    println!("Wrote {}", script_path);
+
+    let settings_path = format!("{}/.claude/settings.json", home);
+    let mut settings: serde_json::Value = std::fs::read_to_string(&settings_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let hooks = settings
+        .as_object_mut()
+        .expect("settings.json root must be an object")
+        .entry("hooks")
+        .or_insert_with(|| serde_json::json!({}));
+
+    let mut added = 0;
+    for (event, state) in [
+        ("UserPromptSubmit", "running"),
+        ("Stop", "idle"),
+        ("Notification", "needs_input"),
+    ] {
+        let command = format!("python3 {} {}", script_path, state);
+        let entries = hooks
+            .as_object_mut()
+            .expect("hooks must be an object")
+            .entry(event)
+            .or_insert_with(|| serde_json::json!([]));
+        let arr = entries.as_array_mut().expect("hook event must be an array");
+        let already = arr.iter().any(|e| e.to_string().contains("/.zeromux/hooks/activity.py"));
+        if !already {
+            arr.push(serde_json::json!({
+                "hooks": [{ "type": "command", "command": command }]
+            }));
+            added += 1;
+        }
+    }
+
+    if added > 0 {
+        std::fs::create_dir_all(format!("{}/.claude", home)).ok();
+        std::fs::write(
+            &settings_path,
+            serde_json::to_string_pretty(&settings).unwrap(),
+        )
+        .expect("Failed to write settings.json");
+        println!("Added {} hook(s) to {}", added, settings_path);
+    } else {
+        println!("Hooks already installed in {}", settings_path);
+    }
 }
 
 fn gen_random_string(len: usize) -> String {
@@ -133,6 +233,11 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let args = Args::parse();
+
+    if args.install_hooks {
+        install_hooks(args.port);
+        return;
+    }
 
     let oauth_configured = args.github_client_id.is_some() && args.github_client_secret.is_some();
 
@@ -237,6 +342,8 @@ async fn main() {
         jwt_secret,
         allowed_users,
         external_url,
+        activity: activity::ActivityStore::open(std::path::Path::new(&data_dir_str)),
+        api_base: format!("http://127.0.0.1:{}", args.port),
     });
 
     let app = web::build_router(state.clone());

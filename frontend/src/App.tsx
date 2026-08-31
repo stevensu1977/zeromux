@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import type { SessionInfo, SessionType, UserInfo } from './lib/api'
-import { listSessions, createSession, deleteSession, checkAuth, legacyLogin, clearAuth } from './lib/api'
+import { listSessions, createSession, deleteSession, checkAuth, legacyLogin, clearAuth, clearAttention } from './lib/api'
 import { useTheme } from './lib/theme'
 import Sidebar from './components/Sidebar'
 import TerminalView from './components/TerminalView'
@@ -102,6 +102,36 @@ export default function App() {
     })
   }, [activeId])
 
+  // Poll the session list so hook-reported activity/attention and auto
+  // titles stay fresh; auto-clear attention on the session being viewed.
+  useEffect(() => {
+    if (authState !== 'active') return
+    const tick = async () => {
+      try {
+        const list = await listSessions()
+        const active = list.find(s => s.id === activeId)
+        if (active?.attention) {
+          clearAttention(active.id).catch(() => {})
+          active.attention = null
+        }
+        setSessions(list)
+      } catch { /* transient — keep last state */ }
+    }
+    const t = setInterval(tick, 5000)
+    return () => clearInterval(t)
+  }, [authState, activeId])
+
+  const handleSelect = useCallback((id: string) => {
+    setActiveId(id)
+    setSessions(prev => prev.map(s => {
+      if (s.id === id && s.attention) {
+        clearAttention(id).catch(() => {})
+        return { ...s, attention: null }
+      }
+      return s
+    }))
+  }, [])
+
   const handleApproved = useCallback(() => {
     setAuthState('active')
     if (user) setUser({ ...user, status: 'active' })
@@ -138,7 +168,7 @@ export default function App() {
       <Sidebar
         sessions={sessions}
         activeId={activeId}
-        onSelect={setActiveId}
+        onSelect={handleSelect}
         onCreate={handleCreate}
         onDelete={handleDelete}
         onLogout={handleLogout}
